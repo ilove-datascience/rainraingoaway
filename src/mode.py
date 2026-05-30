@@ -6,13 +6,13 @@ import torch
 
 
 class radar_cnn(nn.Module):
-    def __init__(self, timesteps = 8):
+    def __init__(self, timesteps = 8, hidden_size=256):
         super().__init__()
         self.timesteps = timesteps
         
         
         
-        self.conv1 = nn.Conv2d(4,12,5,padding=5//2)
+        self.conv1 = nn.Conv2d(self.timesteps,12,5,padding=5//2)
         self.gap = nn.AvgPool2d(2,2)
         self.conv2 = nn.Conv2d(12,24,5,padding=5//2)
         self.conv3 = nn.Conv2d(24,24,5,padding=5//2)
@@ -22,19 +22,20 @@ class radar_cnn(nn.Module):
         
         self.lstm = nn.LSTM(
             input_size=91,      # may need changing
-            hidden_size=256,
+            hidden_size=hidden_size,
             batch_first=True,
-            num_layers=2
+            num_layers=10
         )
         
-        self.fc = nn.Linear(256, self.timesteps * 30 * 54)
+        self.fc = nn.Linear(hidden_size, self.timesteps * 30 * 54)
 
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(self.timesteps, 16, kernel_size=4, stride=2, padding=1),
             nn.ReLU(),
             nn.ConvTranspose2d(
                 16, 1, kernel_size=4, stride=2, padding=1, output_padding=(0, 1)
-            )
+            ),
+            #nn.Sigmoid()
         )
     def forward(self, x):
         x= self.conv1(x)
@@ -42,6 +43,7 @@ class radar_cnn(nn.Module):
         x=self.conv2(x)
         x=self.gap(x)
         x=self.conv3(x)
+        
         x=self.gap(x)
         x=self.conv4(x)
         x=self.gap(x)
