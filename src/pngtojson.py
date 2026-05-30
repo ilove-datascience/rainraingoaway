@@ -132,3 +132,32 @@ def points_to_intensity_grid(points, width=None, height=None, default=0):
             grid[y][x] = intensity
 
     return grid
+
+
+
+def png_to_xy_binary(image_path, include_zero=False):
+    """Return a list of {x,y,intensity} records for pixels in the PNG.
+
+    If `include_zero` is False, pixels with intensity 0 are omitted.
+    """
+
+    img = Image.open(image_path).convert("RGBA")
+    width, height = img.size
+    pixels = img.load()
+
+    points = []
+
+    for y in range(height):
+        for x in range(width):
+            r, g, b, alpha = pixels[x, y]
+
+            if alpha > 0:
+                #intensity = getIntensity({"r": r, "g": g, "b": b})
+                intensity = 1
+            else:
+                intensity = 0
+
+            if include_zero or intensity > 0:
+                points.append({"x": x, "y": y, "intensity": intensity})
+
+    return points
