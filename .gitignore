@@ -4,3 +4,5 @@ data/
 */__pycache__/
 */runs/
 src/model_*
+__pycache__/
+*.pyc
