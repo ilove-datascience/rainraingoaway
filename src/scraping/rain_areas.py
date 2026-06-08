@@ -9,7 +9,7 @@ import requests
 
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = BASE_DIR / "data"
 SG_OFFSET_HOURS = 8
 FETCH_INTERVAL_SECONDS = 5 * 60

@@ -13,7 +13,7 @@ def load_data_names(folder_path, file_type = ".png"):
             file_name = file_name.strip(file_type)
             data.append(file_name)
             count += 1
-    print(f"Loaded {count} images.")
+    print(f"Loaded {count}")
     
     return data
 
@@ -34,7 +34,7 @@ for item in radar_set:
         print(f"Missing {item}")
         
         
-print(f"Missing {len(missing)} iterms")
+print(f"Missing {len(missing)} items")
 for i in missing:
     query_date = datetime.datetime.strptime(str(i), "%Y%m%d%H%M")
     query_date = query_date.strftime("%Y-%m-%dT%H:%M:%S")
