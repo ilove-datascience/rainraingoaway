@@ -16,7 +16,7 @@ import json
 
 from PIL import Image
 
-from src.pngtojson import (
+from data.pngtojson import (
     png_to_intensity_grid,
     png_to_xy_intensity,
     points_to_intensity_grid,

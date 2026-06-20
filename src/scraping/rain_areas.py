@@ -2,6 +2,7 @@ import json
 import time
 import random # For jittering sleep intervals
 from pathlib import Path
+from typing import Optional
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -15,7 +16,7 @@ SG_OFFSET_HOURS = 8
 FETCH_INTERVAL_SECONDS = 5 * 60
 
 
-def datetime_now_str(custom_minutes: int | None = None, offset_hours: int = 0) -> int:
+def datetime_now_str(custom_minutes: Optional[int] = None, offset_hours: int = 0) -> int:
     """Return YYYYMMDDHHMM as int (floored to nearest multiple of 5 minutes)
     The result is adjusted by `offset_hours` and optional `custom_minutes`.
     This combines the previous wrapper behaviour by always flooring the
