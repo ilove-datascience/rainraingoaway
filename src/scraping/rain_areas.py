@@ -58,6 +58,8 @@ def fetch_radar_snapshot(img_name: str) -> tuple[int, Path, Path]:
     # Try the computed timestamp first; if the server doesn't yet have
     # that image (404), fall back to earlier 5-minute ticks.
     max_retries = 3
+    request_retries = 3
+    retry_delay_seconds = 2
     dt_dt = datetime.strptime(str(dt), "%Y%m%d%H%M")
     response = None
     last_exc = None
@@ -67,20 +69,39 @@ def fetch_radar_snapshot(img_name: str) -> tuple[int, Path, Path]:
         attempt_str = int(attempt_dt.strftime("%Y%m%d%H%M"))
         url = f"{base_url}dpsri_{img_name}_{attempt_str}0000dBR.dpsri.png"
 
-        try:
-            response = requests.get(url, headers=headers, timeout=20)
-            response.raise_for_status()
-            if attempt > 0:
-                print(f"Fell back to earlier tick: {attempt_str} (attempt {attempt})")
-            dt = attempt_str
+        for request_attempt in range(request_retries + 1):
+            try:
+                response = requests.get(url, headers=headers, timeout=20)
+                response.raise_for_status()
+                if attempt > 0:
+                    print(f"Fell back to earlier tick: {attempt_str} (attempt {attempt})")
+                dt = attempt_str
+                break
+            except requests.exceptions.Timeout as e:
+                last_exc = e
+                if request_attempt < request_retries:
+                    print(
+                        f"Request timed out for {img_name} {attempt_str} "
+                        f"(retry {request_attempt + 1}/{request_retries})"
+                    )
+                    time.sleep(retry_delay_seconds)
+                    continue
+                break
+            except requests.exceptions.HTTPError as e:
+                last_exc = e
+                if response is not None and response.status_code == 404:
+                    # image not available yet; try previous tick
+                    time.sleep(1)
+                    break
+                raise
+        else:
+            continue
+
+        if response is not None and response.status_code == 200:
             break
-        except requests.exceptions.HTTPError as e:
-            last_exc = e
-            if response is not None and response.status_code == 404:
-                # image not available yet; try previous tick
-                time.sleep(1)
-                continue
-            raise
+
+        if response is not None and response.status_code == 404:
+            continue
 
     if response is None or response.status_code != 200:
         # Re-raise the last HTTP error to surface the failure
