@@ -22,7 +22,7 @@ def run_bot(model, folder_path) -> None:
         level=logging.INFO,
     )
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).connect_timeout(30).read_timeout(30).write_timeout(30).pool_timeout(30).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
     app.add_handler(

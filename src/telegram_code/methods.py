@@ -108,16 +108,29 @@ async def handle_location(update: Update , context: ContextTypes.DEFAULT_TYPE,mo
 	print(f"x pixel: {pixel_x}")
 	print(f"y pixel: {pixel_y}")
 	rain_value_at_location = pred_plot[pixel_y, pixel_x]
+	sg_base_img = np.flipud(plt.imread(str(Path(__file__).resolve().parents[2] / "sgbaseimg_70km.png")))
+	clear_mask = pred_plot < 0.003
+	print(f"Clear pixels below threshold: {np.count_nonzero(clear_mask)}")
+	pred_alpha = np.where(clear_mask, 0.0, 0.78)
 	# nicer plot
 	fig, ax = plt.subplots(figsize=(10, 5.6), dpi=160)
+	ax.set_facecolor("white")
+	ax.imshow(
+		sg_base_img,
+		origin="lower",
+		extent=[0, pred_plot.shape[1] - 1, 0, pred_plot.shape[0] - 1],
+		zorder=0
+	)
 
 	im = ax.imshow(
 		pred_plot,
 		 cmap="turbo",
 		origin="lower",
+		alpha=pred_alpha,
 		norm=PowerNorm(gamma=0.6, vmin=0.0, vmax=1.0),
 		interpolation="nearest",
-		aspect="equal"
+		aspect="equal",
+		zorder=1
 	)
 
 	# user location marker

@@ -1,9 +1,11 @@
 import threading
+from pathlib import Path
 from scraping.rain_areas import check_history, datetime_now_str, SG_OFFSET_HOURS, run_scraper_forever, get_previous_ticks, fetch_radar_snapshot
 from telegram_code.telegram_bot import run_bot
 from scraping.gov_api_backlog import load_data_names
 SEED = 67
-DATA_PATH = r"data\70km\png"
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_PATH = str(BASE_DIR / "data" / "70km" / "png")
 import torch
 from datetime import datetime
 print("torch:", torch.__version__)
