@@ -79,15 +79,42 @@ def run_scraper_forever(
         print(f"Sleeping {sleep_seconds:.1f}s until next 5-minute tick")
         time.sleep(sleep_seconds)
 
+def floor_to_5min(dt: datetime) -> datetime:
+    return dt.replace(
+        minute=dt.minute - (dt.minute % 5),
+        second=0,
+        microsecond=0
+    )
 
-def get_previous_ticks(dt: int, count: int = 4) -> list[int]:
-    """Return a list of the previous `count` 5-minute ticks as YYYYMMDDHHMM ints.
+def attempt_get_most_recent(img_name = "70km", dt_now:datetime | None= None) -> bool:
+    if dt_now is None:
+        dt_now = datetime_now_str(offset_hours=SG_OFFSET_HOURS)
+
+    dt_now = datetime.strptime(str(dt_now), "%Y%m%d%H%M")
+    dt_rounded_down = int(floor_to_5min(dt_now).strftime("%Y%m%d%H%M"))
+    _,_,fellback= fetch_radar_snapshot(img_name=img_name, dt=dt_rounded_down)
+    if fellback:
+        print(f"Radar for {dt_now}, not available")
+    
+    return not fellback 
+    
+    
+def get_previous_ticks(dt: int, count: int = 4,most_recent_success=False) -> list[int]:
+    """Return a list of the previous `count` 5-m
+    inute ticks as YYYYMMDDHHMM ints.
 
     Example: if dt == 202606241310 and count == 3, returns
     [202606241305, 202606241300, 202606241255]
     """
     dt_dt = datetime.strptime(str(dt), "%Y%m%d%H%M")
     prev_ticks: list[int] = []
+    if most_recent_success:
+        prev_ticks.append(int(dt_dt.strftime("%Y%m%d%H%M")))
+        print(f"Using timestamp: {dt_dt}")
+        count = max(count - 1, 0)
+    
+        
+    
     for i in range(1, count + 1):
         prev = dt_dt - timedelta(minutes=5 * i)
         print(f"Using timestamp: {prev}")
@@ -124,6 +151,7 @@ def check_history(img_name: str, dt: int | None = None, count: int = 3) -> bool:
 def fetch_radar_snapshot(img_name: str, dt: int | None = None) -> tuple[int, Path, bool]:
     if dt is None:
         dt = datetime_now_str(offset_hours=SG_OFFSET_HOURS)
+        
     base_url_name = "50km" if img_name == "70km" else img_name
     # 70km maps to the 50km endpoint (which uses /v2/), while 240km does not.
     if img_name == "70km":

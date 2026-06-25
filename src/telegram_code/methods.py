@@ -3,9 +3,10 @@ from telegram import Update, ForceReply, InlineKeyboardMarkup, InlineKeyboardBut
 from pathlib import Path
 from telegram.ext import ContextTypes
 from io import BytesIO
-import os 
+import os
+from datetime import datetime, timedelta, timezone
 from data_processing.data_loading import load_specific_data
-from scraping.rain_areas import datetime_now_str,get_previous_ticks ,SG_OFFSET_HOURS
+from scraping.rain_areas import datetime_now_str,get_previous_ticks ,SG_OFFSET_HOURS, attempt_get_most_recent
 import pandas as pd
 import numpy as np 
 import torch
@@ -44,7 +45,7 @@ async def handle_msg(update: Update , context: ContextTypes.DEFAULT_TYPE):
 	print(f"{user_id}-{user_name}, {text}")
 	#await update.effective_sender.send_message("hfhfifhehfew")
 	await update.message.reply_text("Fuck you mans calling..... i got bad news...")
- 
+
 async def handle_location(update: Update , context: ContextTypes.DEFAULT_TYPE,model,folder_path,):
 	user_id = update.effective_user.id
 	user_name= update.effective_user.name
@@ -52,11 +53,12 @@ async def handle_location(update: Update , context: ContextTypes.DEFAULT_TYPE,mo
 	long= location.longitude
 	lat = location.latitude
 	print(f"Lat:{lat}, Long:{long}")
-	
+	success_most_recent = attempt_get_most_recent()
 	dt_now= datetime_now_str(offset_hours=SG_OFFSET_HOURS)	
-	prev_ticks= get_previous_ticks(dt_now)
-	most_recent_tick = prev_ticks[0]
-	print(most_recent_tick)
+	prev_ticks= get_previous_ticks(dt_now, most_recent_success=success_most_recent)
+	most_recent_tick = datetime.strptime(str(prev_ticks[0]), "%Y%m%d%H%M")
+	next_tick = most_recent_tick + timedelta(minutes=5)
+	
 	data = load_specific_data(file_names = prev_ticks, folder_path= folder_path)
 	print(type(data))
 	frames = []
@@ -105,7 +107,7 @@ async def handle_location(update: Update , context: ContextTypes.DEFAULT_TYPE,mo
 
 	print(f"x pixel: {pixel_x}")
 	print(f"y pixel: {pixel_y}")
-
+	rain_value_at_location = pred_plot[pixel_y, pixel_x]
 	# nicer plot
 	fig, ax = plt.subplots(figsize=(10, 5.6), dpi=160)
 
@@ -132,8 +134,8 @@ async def handle_location(update: Update , context: ContextTypes.DEFAULT_TYPE,mo
 
 	# title and labels
 	ax.set_title(
-		"Rain Prediction Heatmap",
-		fontsize=15,
+		f"Rain Prediction Heatmap - {next_tick}",
+		fontsize=13,
 		weight="bold",
 		pad=12
 	)
@@ -169,10 +171,11 @@ async def handle_location(update: Update , context: ContextTypes.DEFAULT_TYPE,mo
 	plt.savefig(plot_buffer, format="png", bbox_inches="tight", facecolor="white")
 	plot_buffer.seek(0)
 	plt.close(fig)
+	rain_value_at_location_str = f"{rain_value_at_location:.3g}"
 
 	await update.message.reply_photo(
 		photo=plot_buffer,
-		caption="Rain prediction heatmap"
+		caption=f"Rain prediction heatmap, predicted rain value at location: {rain_value_at_location_str}"
 	)
 		
  
