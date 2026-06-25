@@ -1340,6 +1340,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "pyproj", specifier = ">=3.7.2" },
     { name = "python-telegram-bot", specifier = ">=22.7" },
+    { name = "requests", specifier = ">=2.33.1" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "scipy", specifier = ">=1.17.1" },
     { name = "shapely", specifier = ">=2.1.2" },
