@@ -1,4 +1,4 @@
-from gov_api import fetch_once, save_to_csv
+from .gov_api import fetch_once, save_to_csv
 import os
 import datetime
 import random
