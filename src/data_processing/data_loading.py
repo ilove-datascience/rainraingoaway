@@ -3,11 +3,17 @@ import os
 import torch 
 from datetime import datetime
 import pandas as pd
+import numpy as np 
+from pathlib import Path
+import sys
 
-
-
-
-from .pngtojson import points_to_intensity_grid, png_to_xy_intensity, png_to_xy_binary
+if __package__ in {None, ""}:
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+    from data_processing.pngtojson import points_to_intensity_grid, png_to_xy_intensity, png_to_xy_binary
+    from masking import lat_long_to_pixel
+else:
+    from .pngtojson import points_to_intensity_grid, png_to_xy_intensity, png_to_xy_binary
+    from masking import lat_long_to_pixel
 
 def load_data(folder_path, total):
     # Load the data from the specified folder
@@ -64,7 +70,7 @@ def create_samples(data, list_length=10, min_list_length = 7):
 
     for key in keys[1:]:
         value = data[key]
-        value= torch.from_numpy(value.to_numpy()).float()
+        value = torch.from_numpy(np.asarray(value)).float()
         ttl_cnt+=1
         key_time = datetime.strptime(str(key).strip(".png"),"%Y%m%d%H%M")
         prev_key_time = datetime.strptime(str(prev_key).strip(".png"),"%Y%m%d%H%M")
@@ -125,4 +131,130 @@ def create_samples(data, list_length=10, min_list_length = 7):
         
     return x,y
             
+  
+def load_data_multimodal(folder_path_radar, folder_path_env, total=None, verbose=True):
+    # Load the data from the specified folder
+    data = dict()
+    count = 0 
+    skipped_missing_env = 0
+    skipped_incomplete_env = 0
+    radar_files = sorted(os.listdir(folder_path_radar))
+
+    for file_name in radar_files:
+        
+        if file_name.endswith('.png'):
             
+            if total is not None and count >= total:
+                break
+            
+            # remove .png from radar file name
+            radar_name = file_name.replace('.png', '')
+
+            env_file_name = f"weather_{radar_name}.csv"
+            env_path = os.path.join(folder_path_env, env_file_name)
+
+            if not os.path.exists(env_path):
+                if verbose:
+                    print(f"Skipping {radar_name}: missing env file {env_file_name}")
+                skipped_missing_env += 1
+                continue
+
+            intensity_points = png_to_xy_intensity(
+                os.path.join(folder_path_radar, file_name),
+                include_zero=True
+            )
+
+            intensity_grid = points_to_intensity_grid(intensity_points)
+            intensity_df = pd.DataFrame(intensity_grid)
+            intensity_df = intensity_df / 100.0
+
+            env_stack = build_env_data(env_path, verbose=verbose)
+            if env_stack is None:
+                if verbose:
+                    print(f"Skipping {radar_name}: env data incomplete")
+                skipped_incomplete_env += 1
+                continue
+
+            radar_stack = intensity_df.values[np.newaxis, :, :]  # (1, 120, 217)
+            combined_stack = np.concatenate([radar_stack, env_stack], axis=0).astype(np.float32)
+
+            data[file_name] = combined_stack
+            if verbose:
+                print(f"loaded {file_name} with shape {combined_stack.shape}")
+            count += 1
+            
+    skipped_total = skipped_missing_env + skipped_incomplete_env
+    print(
+        f"Loaded {count} images. Skipped {skipped_total} frames "
+        f"({skipped_missing_env} missing env files, {skipped_incomplete_env} incomplete env files)."
+    )
+    
+    return data
+
+def build_env_data(env_path, verbose=True):
+    data_cols = ["humidity", "temperature", "wind_dir", "wind_speed"]
+    loc_cols=["longitude","latitude"]
+    env_df = pd.read_csv(env_path)
+    required_cols = loc_cols + data_cols
+
+    missing_cols = [column for column in required_cols if column not in env_df.columns]
+    if missing_cols:
+        if verbose:
+            print(f"Skipping {env_path}: missing columns {missing_cols}")
+        return None
+
+    env_df = env_df.drop(columns=[column for column in ["timestamp", "station_name"] if column in env_df.columns])
+    env_df = env_df.dropna(subset=required_cols)
+
+    if env_df.empty:
+        if verbose:
+            print(f"Skipping {env_path}: no complete env rows after dropping missing values")
+        return None
+
+    env_data = {}
+    for i in data_cols:
+        i_df = pd.DataFrame(index=range(120), columns=range(217), dtype=float)
+        for index,row in env_df.iterrows():
+            pixelx,pixely= lat_long_to_pixel(long=row[loc_cols[0]], lat=row[loc_cols[1]],width=217, height=120)
+            value = row[i]
+            i_df.iloc[pixely, pixelx] = value
+
+        env_data[i]= i_df
+            
+
+   
+    #print(env_df.head(100))
+    env_stack = np.stack([
+    env_data["humidity"].values,
+    env_data["temperature"].values,
+    env_data["wind_dir"].values,
+    env_data["wind_speed"].values
+    ])
+    #print(f"built env stack for {os.path.basename(env_path)} with shape {env_stack.shape}")
+    return env_stack
+
+if __name__ == "__main__":
+    workspace_root = Path(__file__).resolve().parents[2]
+    radar_folder = workspace_root / "data" / "70km" / "png"
+    env_folder = workspace_root / "data" / "environment"
+
+    holdout_data = load_data_multimodal(str(radar_folder), str(env_folder), verbose=False)
+    print(f"Main loaded {len(holdout_data)} multimodal holdout frames")
+    if holdout_data:
+        first_key = next(iter(holdout_data))
+        expected_shape = holdout_data[first_key].shape
+        print(f"Expected shape: {expected_shape}")
+
+        mismatched_keys = []
+        for key, value in holdout_data.items():
+            if value.shape != expected_shape:
+                mismatched_keys.append((key, value.shape))
+
+        if mismatched_keys:
+            print("Shape mismatches found:")
+            for key, shape in mismatched_keys:
+                print(f"  {key}: {shape}")
+        else:
+            print("All holdout frames have the same shape.")
+    else:
+        print("No holdout frames were loaded.")
