@@ -219,6 +219,9 @@ def build_env_data(env_path, verbose=True):
             value = row[i]
             i_df.iloc[pixely, pixelx] = value
 
+        # Fill unmapped pixels so the multimodal tensor stays finite.
+        i_df = i_df.fillna(0.0)
+
         env_data[i]= i_df
             
 
