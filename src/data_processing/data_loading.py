@@ -236,6 +236,7 @@ def build_env_data(env_path, verbose=True):
     #print(f"built env stack for {os.path.basename(env_path)} with shape {env_stack.shape}")
     return env_stack
 
+# testing multimodal loading 
 if __name__ == "__main__":
     workspace_root = Path(__file__).resolve().parents[2]
     radar_folder = workspace_root / "data" / "70km" / "png"

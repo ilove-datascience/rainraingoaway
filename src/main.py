@@ -37,6 +37,8 @@ def load_model():
     model.load_state_dict(torch.load(r"C:\Users\Jacobs laptop\rainraingoaway\models\model_best_20260623_104758.pkl"))
     model.eval()
     return model 
+
+
 def load_missing_png():
     dt_now= datetime_now_str(offset_hours=SG_OFFSET_HOURS)	
     prev_ticks= get_previous_ticks(dt_now)
