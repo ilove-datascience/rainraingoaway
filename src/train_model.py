@@ -105,7 +105,7 @@ def main():
 		bias=True,
 	).to(device)
 
-	optimizer = torch.optim.SGD(model.parameters(), lr=0.007)
+	optimizer = torch.optim.SGD(model.parameters(), lr=0.0057)
 	loss_fn = radar_intensity_loss
 	timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 	run_dir = project_root / "models" / timestamp
