@@ -82,6 +82,7 @@ def main():
 		str(env_dir),
 		list_length=SAMPLE_SIZE,
 		total=None,
+		num_workers=8,
 	)
 
 	split_idx = int(0.8 * len(dataset))
@@ -97,7 +98,7 @@ def main():
 	print(f"Test batches: {len(test_loader)}")
 
 	model = ConvLSTM(
-		input_dim=5,
+		input_dim=7,
 		hidden_dim=64,
 		kernel_size=(3, 3),
 		num_layers=2,

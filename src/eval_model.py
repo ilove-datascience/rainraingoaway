@@ -97,6 +97,7 @@ def load_dataset(project_root: Path, sample_size: int, radar_png_dir: Path | Non
 		str(env_dir),
 		list_length=sample_size,
 		total=None,
+		num_workers=8,
 	)
 
 	return dataset
@@ -128,7 +129,7 @@ def plot_loss_curve(losses_path: Path, output_path: Path):
 
 def load_model(checkpoint_path: Path, device: torch.device) -> ConvLSTM:
 	model = ConvLSTM(
-		input_dim=5,
+		input_dim=7,
 		hidden_dim=64,
 		kernel_size=(3, 3),
 		num_layers=2,

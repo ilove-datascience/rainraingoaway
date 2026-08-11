@@ -2,7 +2,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from functools import partial
 import logging
 
-from telegram_code.methods import start, handle_msg, handle_location, load_token
+try:
+    from .methods import start, handle_msg, handle_location, load_token
+except ImportError:
+    from methods import start, handle_msg, handle_location, load_token
 
 
 logger = logging.getLogger(__name__)

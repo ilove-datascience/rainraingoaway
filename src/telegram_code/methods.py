@@ -4,15 +4,23 @@ from pathlib import Path
 from telegram.ext import ContextTypes
 from io import BytesIO
 import os
+import sys
 from datetime import datetime, timedelta, timezone
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from data_processing.data_loading import load_specific_data
-from scraping.rain_areas import datetime_now_str,get_previous_ticks ,SG_OFFSET_HOURS, attempt_get_most_recent
+from scraping.rain_areas import datetime_now_str, get_previous_ticks, SG_OFFSET_HOURS, attempt_get_most_recent
+from masking import lat_long_to_pixel
+
 import pandas as pd
 import numpy as np 
 import torch
 import matplotlib.pyplot as plt
 from matplotlib.colors import PowerNorm
-from masking import lat_long_to_pixel
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def load_token(env_key: str = "tele_api_key") -> str:
     token = os.getenv(env_key)

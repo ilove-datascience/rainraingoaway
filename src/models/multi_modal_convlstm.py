@@ -58,7 +58,7 @@ class ConvLSTMCell(nn.Module):
                 torch.zeros(batch_size, self.hidden_dim, height, width, device=self.conv.weight.device))
 
 
-class ConvLSTM(nn.Module):
+class ConvLSTM_MM(nn.Module):
 
     """
 
@@ -88,7 +88,7 @@ class ConvLSTM(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, kernel_size, num_layers,
                  batch_first=False, bias=True, return_all_layers=False):
-        super(ConvLSTM, self).__init__()
+        super(ConvLSTM_MM, self).__init__()
 
         self._check_kernel_size_consistency(kernel_size)
 
@@ -97,6 +97,7 @@ class ConvLSTM(nn.Module):
         hidden_dim = self._extend_for_multilayer(hidden_dim, num_layers)
         if not len(kernel_size) == len(hidden_dim) == num_layers:
             raise ValueError('Inconsistent list length.')
+
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
