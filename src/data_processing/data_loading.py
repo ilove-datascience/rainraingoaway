@@ -186,14 +186,7 @@ def _read_cache(cache_file, metadata_file, radar_path, env_path):
     except (json.JSONDecodeError, OSError):
         return None
 
-    radar_mtime = os.path.getmtime(radar_path)
-    env_mtime = os.path.getmtime(env_path)
-
-    if (
-        metadata.get("radar_mtime") != radar_mtime
-        or metadata.get("env_mtime") != env_mtime
-        or metadata.get("radar_cleaning_version") != RADAR_CLEANING_VERSION
-    ):
+    if metadata.get("radar_cleaning_version") != RADAR_CLEANING_VERSION:
         return None
 
     try:
@@ -346,7 +339,7 @@ def build_env_data(env_path, verbose=True, height=120, width=217):
 
     if env_df.empty:
         if verbose:
-            print(f"Skipping {env_path}: no complete env rows after dropping missing values")
+            print(f"Sk  ipping {env_path}: no complete env rows after dropping missing values")
         return None
 
     station_coords = []
