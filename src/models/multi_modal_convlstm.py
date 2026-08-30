@@ -87,7 +87,8 @@ class ConvLSTM_MM(nn.Module):
     """
 
     def __init__(self, input_dim, hidden_dim, kernel_size, num_layers,
-                 batch_first=False, bias=True, return_all_layers=False):
+                 batch_first=False, bias=True, return_all_layers=False,
+                 land_use_channels=33, land_use_feature_dim=8):
         super(ConvLSTM_MM, self).__init__()
 
         self._check_kernel_size_consistency(kernel_size)
@@ -100,22 +101,37 @@ class ConvLSTM_MM(nn.Module):
 
 
         self.input_dim = input_dim
+        self.land_use_channels = land_use_channels
+        self.land_use_feature_dim = land_use_feature_dim
+        self.dynamic_channels = input_dim
+        self.recurrent_input_dim = input_dim + land_use_feature_dim
+        if land_use_channels <= 0 or land_use_feature_dim <= 0:
+            raise ValueError("land_use_channels and land_use_feature_dim must be positive")
+        self.land_use_encoder = nn.Sequential(
+            nn.Conv2d(land_use_channels, land_use_feature_dim, kernel_size=1),
+            nn.GroupNorm(num_groups=4, num_channels=land_use_feature_dim),
+            nn.SiLU(),
+        )
         self.hidden_dim = hidden_dim
         self.kernel_size = kernel_size
         self.num_layers = num_layers
         self.batch_first = batch_first
         self.bias = bias
         self.return_all_layers = return_all_layers
-        #compress hidden dims back down to one for next frame prediction
-        self.output_conv = nn.Conv2d(
-            in_channels=self.hidden_dim[-1],
-            out_channels=1,
-            kernel_size=1
+        decoder_dim = max(self.hidden_dim[-1] // 2, 16)
+        self.decoder = nn.Sequential(
+            nn.Conv2d(self.hidden_dim[-1], decoder_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=8, num_channels=decoder_dim),
+            nn.SiLU(),
+            nn.Conv2d(decoder_dim, decoder_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(num_groups=8, num_channels=decoder_dim),
+            nn.SiLU(),
         )
+        self.output_conv = nn.Conv2d(decoder_dim, 1, kernel_size=1)
 
         cell_list = []
         for i in range(0, self.num_layers):
-            cur_input_dim = self.input_dim if i == 0 else self.hidden_dim[i - 1]
+            cur_input_dim = self.recurrent_input_dim if i == 0 else self.hidden_dim[i - 1]
 
             cell_list.append(ConvLSTMCell(input_dim=cur_input_dim,
                                           hidden_dim=self.hidden_dim[i],
@@ -124,7 +140,7 @@ class ConvLSTM_MM(nn.Module):
 
         self.cell_list = nn.ModuleList(cell_list)
 
-    def forward(self, input_tensor, hidden_state=None):
+    def forward(self, input_tensor, hidden_state=None, return_components=False):
         """
 
         Parameters
@@ -142,7 +158,22 @@ class ConvLSTM_MM(nn.Module):
             # (t, b, c, h, w) -> (b, t, c, h, w)
             input_tensor = input_tensor.permute(1, 0, 2, 3, 4)
 
-        b, _, _, h, w = input_tensor.size()
+        if input_tensor.dim() != 5:
+            raise ValueError("input_tensor must have shape [B, T, C, H, W] or [T, B, C, H, W]")
+
+        b, _, channels, h, w = input_tensor.size()
+        expected_channels = self.dynamic_channels + self.land_use_channels
+        if channels != expected_channels:
+            raise ValueError(
+                f"Expected {expected_channels} input channels "
+                f"({self.dynamic_channels} dynamic + {self.land_use_channels} land-use), got {channels}"
+            )
+        dynamic_input = input_tensor[:, :, :self.dynamic_channels]
+        land_use_input = input_tensor[:, :, self.dynamic_channels:]
+        encoded_land_use = self.land_use_encoder(
+            land_use_input.reshape(b * land_use_input.size(1), self.land_use_channels, h, w)
+        ).reshape(b, land_use_input.size(1), self.land_use_feature_dim, h, w)
+        input_tensor = torch.cat([dynamic_input, encoded_land_use], dim=2)
 
         # Implement stateful ConvLSTM
         if hidden_state is not None:
@@ -173,13 +204,16 @@ class ConvLSTM_MM(nn.Module):
             layer_output_list.append(layer_output)
             last_state_list.append([h, c])
 
-        # h is already the final hidden state from the final ConvLSTM layer
-        # shape: (B, hidden_dim, H, W)
-        prediction = torch.sigmoid(self.output_conv(h))
-        #prediction = (self.output_conv(h))
+        # Refine the final recurrent state, then predict a residual over the
+        # most recent radar frame. The raw output is intentional for regression.
+        delta = self.output_conv(self.decoder(h))
+        last_radar = input_tensor[:, -1, :1]
+        prediction = last_radar + delta
 
 
         # shape: (B, 1, H, W)
+        if return_components:
+            return prediction, last_radar, delta
         return prediction
 
     def _init_hidden(self, batch_size, image_size):

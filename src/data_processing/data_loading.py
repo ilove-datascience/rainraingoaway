@@ -9,6 +9,12 @@ import pandas as pd
 import numpy as np 
 from pathlib import Path
 import sys
+from scipy.ndimage import label
+
+RADAR_CLEANING_VERSION = "connected_components_v1_min4_strong010"
+RADAR_RAIN_THRESHOLD = 0.01
+RADAR_MIN_PIXELS = 4
+RADAR_STRONG_THRESHOLD = 0.10
 
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -17,6 +23,34 @@ if __package__ in {None, ""}:
 else:
     from .pngtojson import points_to_intensity_grid, png_to_xy_intensity
     from masking import lat_long_to_pixel
+
+
+def remove_small_echoes(
+    radar,
+    rain_threshold=RADAR_RAIN_THRESHOLD,
+    min_pixels=RADAR_MIN_PIXELS,
+    strong_threshold=RADAR_STRONG_THRESHOLD,
+):
+    """Remove tiny weak 8-connected radar components while preserving intensities."""
+    radar = np.asarray(radar, dtype=np.float32)
+    if radar.ndim != 2:
+        raise ValueError(f"radar must be 2D, got shape {radar.shape}")
+    if min_pixels < 1:
+        raise ValueError("min_pixels must be at least 1")
+
+    rain_mask = radar > rain_threshold
+    structure = np.ones((3, 3), dtype=np.uint8)
+    component_labels, component_count = label(rain_mask, structure=structure)
+    keep_mask = np.zeros_like(rain_mask, dtype=bool)
+
+    for component_id in range(1, component_count + 1):
+        component = component_labels == component_id
+        if component.sum() >= min_pixels or radar[component].max() >= strong_threshold:
+            keep_mask |= component
+
+    cleaned = radar.copy()
+    cleaned[~keep_mask] = 0.0
+    return cleaned
 
 def load_data(folder_path, total):
     # Load the data from the specified folder
@@ -33,7 +67,7 @@ def load_data(folder_path, total):
             #intensity_points = png_to_xy_binary(os.path.join(folder_path, file_name),include_zero=True)
             intensity_grid = points_to_intensity_grid(intensity_points )
             intensity_df = pd.DataFrame(intensity_grid)
-            intensity_df = intensity_df / 100.0
+            intensity_df = pd.DataFrame(remove_small_echoes(intensity_df.values / 100.0))
             data[file_name] = intensity_df
             count += 1
     print(f"Loaded {count} images.")
@@ -53,7 +87,7 @@ def load_specific_data(file_names:list, folder_path):
             #intensity_points = png_to_xy_binary(os.path.join(folder_path, file_name),include_zero=True)
             intensity_grid = points_to_intensity_grid(intensity_points )
             intensity_df = pd.DataFrame(intensity_grid)
-            intensity_df = intensity_df / 100.0
+            intensity_df = pd.DataFrame(remove_small_echoes(intensity_df.values / 100.0))
             data.append(intensity_df)
             count += 1
     print(f"Loaded {count} images.")
@@ -155,7 +189,11 @@ def _read_cache(cache_file, metadata_file, radar_path, env_path):
     radar_mtime = os.path.getmtime(radar_path)
     env_mtime = os.path.getmtime(env_path)
 
-    if metadata.get("radar_mtime") != radar_mtime or metadata.get("env_mtime") != env_mtime:
+    if (
+        metadata.get("radar_mtime") != radar_mtime
+        or metadata.get("env_mtime") != env_mtime
+        or metadata.get("radar_cleaning_version") != RADAR_CLEANING_VERSION
+    ):
         return None
 
     try:
@@ -173,6 +211,7 @@ def _write_cache(cache_file, metadata_file, radar_path, env_path, array):
     metadata = {
         "radar_mtime": os.path.getmtime(radar_path),
         "env_mtime": os.path.getmtime(env_path),
+        "radar_cleaning_version": RADAR_CLEANING_VERSION,
         "shape": list(array.shape),
         "dtype": str(array.dtype),
     }
@@ -202,19 +241,18 @@ def _load_multimodal_frame(task):
 
         intensity_points = png_to_xy_intensity(radar_path, include_zero=True)
         intensity_grid = points_to_intensity_grid(intensity_points)
-        intensity_df = pd.DataFrame(intensity_grid)
-        intensity_df = intensity_df / 100.0
+        radar_grid = remove_small_echoes(np.asarray(intensity_grid, dtype=np.float32) / 100.0)
 
         env_stack = build_env_data(
             env_path,
             verbose=False,
-            height=intensity_df.shape[0],
-            width=intensity_df.shape[1],
+            height=radar_grid.shape[0],
+            width=radar_grid.shape[1],
         )
         if env_stack is None:
             return None, 'incomplete_env', radar_name, env_file_name
 
-        radar_stack = intensity_df.values[np.newaxis, :, :]  # (1, H, W)
+        radar_stack = radar_grid[np.newaxis, :, :]  # (1, H, W)
         combined_stack = np.concatenate([radar_stack, env_stack], axis=0).astype(np.float32)
 
         if use_cache:

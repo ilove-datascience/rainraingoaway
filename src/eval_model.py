@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from data_processing.multimodal_radar_dataset import radar_dataset_multimodal
-from models.convlstm import ConvLSTM
+from models.multi_modal_convlstm import ConvLSTM_MM
 
 
 SEED = 67
@@ -103,6 +103,13 @@ def load_dataset(project_root: Path, sample_size: int, radar_png_dir: Path | Non
 	return dataset
 
 
+def find_normalization_stats_file(checkpoint_path: Path) -> Path | None:
+	candidate = checkpoint_path.parent / "normalization_stats.json"
+	if candidate.exists():
+		return candidate
+	return None
+
+
 def find_latest_losses_csv(checkpoint_dir: Path) -> Path | None:
 	losses_candidates = list(checkpoint_dir.glob("multimodal_convlstm_losses_*.csv"))
 	if not losses_candidates:
@@ -127,14 +134,16 @@ def plot_loss_curve(losses_path: Path, output_path: Path):
 	plt.close(fig)
 
 
-def load_model(checkpoint_path: Path, device: torch.device) -> ConvLSTM:
-	model = ConvLSTM(
+def load_model(checkpoint_path: Path, device: torch.device) -> ConvLSTM_MM:
+	model = ConvLSTM_MM(
 		input_dim=7,
-		hidden_dim=64,
-		kernel_size=(3, 3),
+		hidden_dim=[32, 64],
+		kernel_size=[(3, 3), (3, 3)],
 		num_layers=2,
 		batch_first=True,
 		bias=True,
+		land_use_channels=33,
+		land_use_feature_dim=8,
 	).to(device)
 
 	state_dict = torch.load(checkpoint_path, map_location=device)
@@ -325,6 +334,13 @@ def main():
 	print(f"Test batches: {len(test_loader)}")
 
 	model = load_model(checkpoint_path, device)
+	norm_stats_path = find_normalization_stats_file(checkpoint_path)
+	if norm_stats_path is not None:
+		norm_stats = json.loads(norm_stats_path.read_text(encoding="utf-8"))
+		test_dataset.set_normalization_stats(norm_stats)
+		print(f"Loaded normalization stats: {norm_stats_path}")
+	else:
+		print("Warning: normalization_stats.json not found next to checkpoint; using raw env scales.")
 	metrics, previews = evaluate(model, test_loader, device)
 
 	print("Evaluation metrics:")

@@ -1,4 +1,6 @@
 import os
+import json
+import copy
 from datetime import datetime
 from pathlib import Path
 
@@ -8,13 +10,14 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from data_processing.multimodal_radar_dataset import radar_dataset_multimodal
-from models.convlstm import ConvLSTM
+from models.multi_modal_convlstm import ConvLSTM_MM
 
 
 SEED = 67
 SAMPLE_SIZE = 4
 BATCH_SIZE = 16
 EPOCHS = 200
+EARLY_STOPPING_PATIENCE = 50
 
 
 def radar_intensity_loss(
@@ -86,6 +89,10 @@ def main():
 	)
 
 	split_idx = int(0.8 * len(dataset))
+	train_indices = list(range(0, split_idx))
+	dataset.fit_normalization(train_indices)
+	normalization_stats = dataset.get_normalization_stats()
+	print("Applied train-split normalization stats for env channels and distance")
 	train_dataset = torch.utils.data.Subset(dataset, range(0, split_idx))
 	test_dataset = torch.utils.data.Subset(dataset, range(split_idx, len(dataset)))
 
@@ -97,27 +104,34 @@ def main():
 	print(f"Train batches: {len(train_loader)}")
 	print(f"Test batches: {len(test_loader)}")
 
-	model = ConvLSTM(
+	model = ConvLSTM_MM(
 		input_dim=7,
-		hidden_dim=64,
-		kernel_size=(3, 3),
+		hidden_dim=[32, 64],
+		kernel_size=[(3, 3), (3, 3)],
 		num_layers=2,
 		batch_first=True,
 		bias=True,
+		land_use_channels=33,
+		land_use_feature_dim=8,
 	).to(device)
 
-	optimizer = torch.optim.SGD(model.parameters(), lr=0.0057)
+	optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
 	loss_fn = radar_intensity_loss
 	timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 	run_dir = project_root / "models" / timestamp
 	run_dir.mkdir(parents=True, exist_ok=True)
 	model_path = run_dir / f"model_{timestamp}.pkl"
 	losses_path = run_dir / f"multimodal_convlstm_losses_{timestamp}.csv"
+	norm_stats_path = run_dir / "normalization_stats.json"
+	norm_stats_path.write_text(json.dumps(normalization_stats, indent=2), encoding="utf-8")
+	print(f"Saved normalization stats: {norm_stats_path}")
 
 	epoch_number = 0
 	train_losses = []
 	val_losses = []
 	best_vloss = float("inf")
+	best_state_dict = None
+	epochs_without_improvement = 0
 
 	for _ in range(EPOCHS):
 		print(f"EPOCH {epoch_number + 1}:")
@@ -153,13 +167,28 @@ def main():
 
 		if avg_val_loss < best_vloss:
 			best_vloss = avg_val_loss
+			best_state_dict = copy.deepcopy(model.state_dict())
+			epochs_without_improvement = 0
 			torch.save(model.state_dict(), model_path)
+		else:
+			epochs_without_improvement += 1
+
+		if epochs_without_improvement >= EARLY_STOPPING_PATIENCE:
+			print(
+				f"Early stopping triggered after {epoch_number + 1} epochs "
+				f"with no validation improvement for {EARLY_STOPPING_PATIENCE} epochs."
+			)
+			break
 
 		epoch_number += 1
 
+	if best_state_dict is not None:
+		model.load_state_dict(best_state_dict)
+		print("Restored best model weights in memory.")
+
 	losses_df = pd.DataFrame(
 		{
-			"epoch": list(range(1, EPOCHS + 1)),
+			"epoch": list(range(1, len(train_losses) + 1)),
 			"train_loss": train_losses,
 			"val_loss": val_losses,
 		}
