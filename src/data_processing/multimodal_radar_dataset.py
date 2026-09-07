@@ -10,8 +10,9 @@ from .data_loading import load_data_multimodal, create_samples
 
 class radar_dataset_multimodal(Dataset):
     def __init__(self, folderloc_radar, folderloc_env, total, list_length=10,
-                 min_list_length=10, num_workers=None, land_use_path=None):
+                 min_list_length=10, num_workers=None, land_use_path=None, use_land_use=True):
         min_list_length = list_length
+        self.use_land_use = use_land_use
 
         self.channel_map = {
             "radar": 0,
@@ -37,13 +38,15 @@ class radar_dataset_multimodal(Dataset):
         self._persistent_min_pixels = 4
         self._persistent_strong_threshold = 0.10
 
-        if land_use_path is None:
-            land_use_path = Path(__file__).resolve().parents[2] / "data" / "land_use_masks.npy"
-        self.land_use_masks = torch.from_numpy(
-            np.load(land_use_path).astype(np.float32)
-        )
-        if self.land_use_masks.ndim != 3:
-            raise ValueError("land_use_masks must have shape [classes, H, W]")
+        self.land_use_masks = None
+        if self.use_land_use:
+            if land_use_path is None:
+                land_use_path = Path(__file__).resolve().parents[2] / "data" / "land_use_masks.npy"
+            self.land_use_masks = torch.from_numpy(
+                np.load(land_use_path).astype(np.float32)
+            )
+            if self.land_use_masks.ndim != 3:
+                raise ValueError("land_use_masks must have shape [classes, H, W]")
         
         self.data = load_data_multimodal(
             folder_path_radar=folderloc_radar,
@@ -116,7 +119,10 @@ class radar_dataset_multimodal(Dataset):
             if sample.shape[1] < 7:
                 raise ValueError("Expected at least 7 dynamic channels before land-use concatenation")
 
-            values = sample[:, self.zscore_channels, :, :].reshape(len(self.zscore_channels), -1).double()
+            # [T, 4, H, W] -> [4, T, H, W] before flattening, so reshape can't
+            # scramble values across timesteps/channels when T > 1.
+            selected = sample[:, self.zscore_channels, :, :].permute(1, 0, 2, 3)
+            values = selected.reshape(len(self.zscore_channels), -1).double()
             channel_sum += values.sum(dim=1)
             channel_sq_sum += (values * values).sum(dim=1)
             total_count += values.shape[1]
@@ -209,15 +215,16 @@ class radar_dataset_multimodal(Dataset):
         sample = self.x[idx]
         target = self.y[idx]
 
-        # sample: [T, 7, H, W] before adding static land-use features
+        # sample: [T, 7, H, W] before optionally adding static land-use features
         sample = torch.stack(sample).float()
         sample = self._normalize_dynamic_channels(sample)
-        if sample.shape[-2:] != self.land_use_masks.shape[-2:]:
-            raise ValueError(
-                "Radar/environment and land-use grids must have identical spatial dimensions"
-            )
-        land_use = self.land_use_masks.unsqueeze(0).expand(sample.shape[0], -1, -1, -1)
-        sample = torch.cat([sample, land_use], dim=1)
+        if self.use_land_use:
+            if sample.shape[-2:] != self.land_use_masks.shape[-2:]:
+                raise ValueError(
+                    "Radar/environment and land-use grids must have identical spatial dimensions"
+                )
+            land_use = self.land_use_masks.unsqueeze(0).expand(sample.shape[0], -1, -1, -1)
+            sample = torch.cat([sample, land_use], dim=1)
 
         # Predict next radar frame only (channel 0), shape [H, W]
         target = target[0].float()

@@ -93,6 +93,11 @@ def fetch_once(query_date: Optional[Union[str, datetime]] = None) -> pd.DataFram
         for station in data_list[1]["stations"]
     }
 
+    # Wind sensors publish on a different cadence than temperature/humidity, so their
+    # "same" reading can land 1-2 minutes off. Match within this tolerance instead of
+    # requiring an exact timestamp match, or wind rows get silently dropped.
+    MATCH_TOLERANCE = timedelta(minutes=2)
+
     rows = []
     for i, data in enumerate(data_list):
         for reading_batch in data["readings"]:
@@ -120,15 +125,37 @@ def fetch_once(query_date: Optional[Union[str, datetime]] = None) -> pd.DataFram
                         if row["timestamp"] == timestamp and row["station_id"] == station_id and row["station_name"] == station.get("name"):
                             row["temperature"] = reading["value"]
                 elif i == 2:
-                    for row in rows:
-                        if row["timestamp"] == timestamp and row["station_id"] == station_id and row["station_name"] == station.get("name"):
-                            row["wind_dir"] = reading["value"]
+                    match = _find_closest_row(rows, timestamp, station_id, station.get("name"), "wind_dir", MATCH_TOLERANCE)
+                    if match is not None:
+                        match["wind_dir"] = reading["value"]
+                        match["wind_dir_offset_seconds"] = (timestamp - match["timestamp"]).total_seconds()
                 elif i == 3:
-                    for row in rows:
-                        if row["timestamp"] == timestamp and row["station_id"] == station_id and row["station_name"] == station.get("name"):
-                            row["wind_speed"] = reading["value"]
+                    match = _find_closest_row(rows, timestamp, station_id, station.get("name"), "wind_speed", MATCH_TOLERANCE)
+                    if match is not None:
+                        match["wind_speed"] = reading["value"]
+                        match["wind_speed_offset_seconds"] = (timestamp - match["timestamp"]).total_seconds()
 
     return pd.DataFrame(rows)
+
+
+def _find_closest_row(rows, timestamp, station_id, station_name, field_name, tolerance):
+    """Find the row for this station closest in time to `timestamp` that doesn't already have `field_name`, within `tolerance`."""
+    best_row = None
+    best_diff = None
+    for row in rows:
+        if row["station_id"] != station_id or row["station_name"] != station_name:
+            continue
+        if field_name in row:
+            continue
+
+        diff = abs(row["timestamp"] - timestamp)
+        if diff > tolerance:
+            continue
+        if best_diff is None or diff < best_diff:
+            best_diff = diff
+            best_row = row
+
+    return best_row
 
 
 def sleep_until_next_five_minute_boundary() -> None:
@@ -164,9 +191,13 @@ def main() -> None:
     while True:
         # Ensure we run on an exact 5-minute boundary (or immediately if already aligned).
         sleep_until_next_five_minute_boundary()
-        data_df = fetch_once()
-        output_path = save_to_csv(data_df)
-        print(f"saved {len(data_df)} rows to {output_path}")
+        try:
+            data_df = fetch_once()
+            output_path = save_to_csv(data_df)
+            print(f"saved {len(data_df)} rows to {output_path}")
+        except Exception as exc:
+            # Never let a transient failure (network error, API hiccup, etc.) kill the loop.
+            print(f"weather fetch failed, will retry next tick: {exc}")
 
 
 if __name__ == "__main__":

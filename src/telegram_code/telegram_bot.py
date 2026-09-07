@@ -18,7 +18,7 @@ async def on_bot_error(update, context) -> None:
         logger.error("Update that caused error: %s", update)
 
 
-def run_bot(model, folder_path) -> None:
+def run_bot(model, folder_path, norm_stats=None) -> None:
     token = load_token()
     logging.basicConfig(
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",
@@ -26,12 +26,17 @@ def run_bot(model, folder_path) -> None:
     )
 
     app = Application.builder().token(token).connect_timeout(30).read_timeout(30).write_timeout(30).pool_timeout(30).build()
-    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("test", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
     app.add_handler(
         MessageHandler(
             filters.LOCATION,
-            partial(handle_location, model=model, folder_path=folder_path),
+            partial(
+                handle_location,
+                model=model,
+                folder_path=folder_path,
+                norm_stats=norm_stats,
+            ),
         )
     )
     app.add_error_handler(on_bot_error)

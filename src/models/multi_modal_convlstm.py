@@ -88,7 +88,7 @@ class ConvLSTM_MM(nn.Module):
 
     def __init__(self, input_dim, hidden_dim, kernel_size, num_layers,
                  batch_first=False, bias=True, return_all_layers=False,
-                 land_use_channels=33, land_use_feature_dim=8):
+                 land_use_channels=33, land_use_feature_dim=8, use_land_use=True):
         super(ConvLSTM_MM, self).__init__()
 
         self._check_kernel_size_consistency(kernel_size)
@@ -101,17 +101,22 @@ class ConvLSTM_MM(nn.Module):
 
 
         self.input_dim = input_dim
+        self.use_land_use = use_land_use
         self.land_use_channels = land_use_channels
         self.land_use_feature_dim = land_use_feature_dim
         self.dynamic_channels = input_dim
-        self.recurrent_input_dim = input_dim + land_use_feature_dim
-        if land_use_channels <= 0 or land_use_feature_dim <= 0:
-            raise ValueError("land_use_channels and land_use_feature_dim must be positive")
-        self.land_use_encoder = nn.Sequential(
-            nn.Conv2d(land_use_channels, land_use_feature_dim, kernel_size=1),
-            nn.GroupNorm(num_groups=4, num_channels=land_use_feature_dim),
-            nn.SiLU(),
-        )
+        if self.use_land_use:
+            if land_use_channels <= 0 or land_use_feature_dim <= 0:
+                raise ValueError("land_use_channels and land_use_feature_dim must be positive")
+            self.recurrent_input_dim = input_dim + land_use_feature_dim
+            self.land_use_encoder = nn.Sequential(
+                nn.Conv2d(land_use_channels, land_use_feature_dim, kernel_size=1),
+                nn.GroupNorm(num_groups=4, num_channels=land_use_feature_dim),
+                nn.SiLU(),
+            )
+        else:
+            self.recurrent_input_dim = input_dim
+            self.land_use_encoder = None
         self.hidden_dim = hidden_dim
         self.kernel_size = kernel_size
         self.num_layers = num_layers
@@ -127,7 +132,8 @@ class ConvLSTM_MM(nn.Module):
             nn.GroupNorm(num_groups=8, num_channels=decoder_dim),
             nn.SiLU(),
         )
-        self.output_conv = nn.Conv2d(decoder_dim, 1, kernel_size=1)
+        self.intensity_head = nn.Conv2d(decoder_dim, 1, kernel_size=1)
+        self.rain_head = nn.Conv2d(decoder_dim, 1, kernel_size=1)
 
         cell_list = []
         for i in range(0, self.num_layers):
@@ -140,7 +146,7 @@ class ConvLSTM_MM(nn.Module):
 
         self.cell_list = nn.ModuleList(cell_list)
 
-    def forward(self, input_tensor, hidden_state=None, return_components=False):
+    def forward(self, input_tensor, hidden_state=None, return_components=False, return_logits=False):
         """
 
         Parameters
@@ -162,18 +168,20 @@ class ConvLSTM_MM(nn.Module):
             raise ValueError("input_tensor must have shape [B, T, C, H, W] or [T, B, C, H, W]")
 
         b, _, channels, h, w = input_tensor.size()
-        expected_channels = self.dynamic_channels + self.land_use_channels
+        expected_channels = self.dynamic_channels + (self.land_use_channels if self.use_land_use else 0)
         if channels != expected_channels:
             raise ValueError(
                 f"Expected {expected_channels} input channels "
-                f"({self.dynamic_channels} dynamic + {self.land_use_channels} land-use), got {channels}"
+                f"({self.dynamic_channels} dynamic"
+                + (f" + {self.land_use_channels} land-use), got {channels}" if self.use_land_use else f"), got {channels}")
             )
-        dynamic_input = input_tensor[:, :, :self.dynamic_channels]
-        land_use_input = input_tensor[:, :, self.dynamic_channels:]
-        encoded_land_use = self.land_use_encoder(
-            land_use_input.reshape(b * land_use_input.size(1), self.land_use_channels, h, w)
-        ).reshape(b, land_use_input.size(1), self.land_use_feature_dim, h, w)
-        input_tensor = torch.cat([dynamic_input, encoded_land_use], dim=2)
+        if self.use_land_use:
+            dynamic_input = input_tensor[:, :, :self.dynamic_channels]
+            land_use_input = input_tensor[:, :, self.dynamic_channels:]
+            encoded_land_use = self.land_use_encoder(
+                land_use_input.reshape(b * land_use_input.size(1), self.land_use_channels, h, w)
+            ).reshape(b, land_use_input.size(1), self.land_use_feature_dim, h, w)
+            input_tensor = torch.cat([dynamic_input, encoded_land_use], dim=2)
 
         # Implement stateful ConvLSTM
         if hidden_state is not None:
@@ -204,12 +212,16 @@ class ConvLSTM_MM(nn.Module):
             layer_output_list.append(layer_output)
             last_state_list.append([h, c])
 
-        # Refine the final recurrent state, then predict a residual over the
-        # most recent radar frame. The raw output is intentional for regression.
-        delta = self.output_conv(self.decoder(h))
+        decoder_features = self.decoder(h)
+
+        delta = self.intensity_head(decoder_features)
+        rain_logits = self.rain_head(decoder_features)
+
         last_radar = input_tensor[:, -1, :1]
         prediction = last_radar + delta
 
+        if return_logits:
+            return prediction, last_radar, delta, rain_logits
 
         # shape: (B, 1, H, W)
         if return_components:

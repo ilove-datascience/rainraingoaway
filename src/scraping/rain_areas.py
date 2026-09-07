@@ -1,13 +1,15 @@
 import json
 import time
 import random # For jittering sleep intervals
+import sys
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta, timezone
 
 import requests
 
-
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -72,9 +74,35 @@ def run_scraper_forever(
     img_names: tuple[str, ...] = (["70km"]),
     interval_seconds: int = FETCH_INTERVAL_SECONDS,
 ) -> None:
-    """Continuously fetch radar images and retry sooner after a fallback."""
+    """Continuously fetch radar images and retry sooner after a fallback.
+
+    After each pass, also build+cache the 70km multimodal frame. Ticks whose
+    weather CSV isn't ready yet are kept in `pending_cache` and retried on the
+    next pass (by then the env fetch has usually caught up).
+    """
+    from data_processing.data_loading import build_and_cache_frame
+
+    pending_cache: set[int] = set()
     while True:
         fell_back_any = scrape_once(img_names)
+
+        # Cache multimodal frames for 70km only; retry pending ticks next pass.
+        if "70km" in img_names:
+            dt_now = datetime_now_str(offset_hours=SG_OFFSET_HOURS)
+            pending_cache.add(dt_now)
+            still_pending = set()
+            for tick in sorted(pending_cache):
+                try:
+                    if build_and_cache_frame(tick, img_name="70km", verbose=False) is None:
+                        still_pending.add(tick)
+                except Exception as exc:
+                    print(f"cache attempt failed for {tick}: {exc}")
+                    still_pending.add(tick)
+            # Don't let the pending set grow unbounded across long outages.
+            pending_cache = set(sorted(still_pending)[-12:])
+            if pending_cache:
+                print(f"Pending multimodal cache ticks: {sorted(pending_cache)}")
+
         sleep_seconds = fallback_sleep_seconds() if fell_back_any else interval_seconds
         print(f"Sleeping {sleep_seconds:.1f}s until next 5-minute tick")
         time.sleep(sleep_seconds)

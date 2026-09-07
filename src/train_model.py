@@ -14,7 +14,7 @@ from models.multi_modal_convlstm import ConvLSTM_MM
 
 
 SEED = 67
-SAMPLE_SIZE = 4
+SAMPLE_SIZE = 3
 BATCH_SIZE = 16
 EPOCHS = 200
 EARLY_STOPPING_PATIENCE = 50
@@ -42,6 +42,56 @@ def radar_intensity_loss(
 	return (loss * weights).sum() / weights.sum().clamp_min(1.0)
 
 
+def dual_head_loss(
+	pred,
+	target,
+	rain_logits,
+	rain_threshold=0.01,
+	classification_weight=1.0,
+	rain_intensity_weight=1.0,
+	dry_weight=0.25,
+	beta=0.05,
+	pos_weight=None,
+	return_components=False,
+):
+	rain_target = (target > rain_threshold).float()
+	rain_mask = rain_target.bool()
+	dry_mask = ~rain_mask
+
+	rain_loss = F.binary_cross_entropy_with_logits(
+		rain_logits,
+		rain_target,
+		pos_weight=pos_weight,
+	)
+
+	if rain_mask.any():
+		intensity_loss = F.smooth_l1_loss(
+			pred[rain_mask],
+			target[rain_mask],
+			beta=beta,
+		)
+	else:
+		intensity_loss = pred.new_tensor(0.0)
+
+	if dry_mask.any():
+		dry_loss = F.smooth_l1_loss(
+			pred[dry_mask],
+			torch.zeros_like(pred[dry_mask]),
+			beta=beta,
+		)
+	else:
+		dry_loss = pred.new_tensor(0.0)
+
+	total_loss = (
+		classification_weight * rain_loss
+		+ rain_intensity_weight * intensity_loss
+		+ dry_weight * dry_loss
+	)
+	if return_components:
+		return total_loss, rain_loss, intensity_loss, dry_loss
+	return total_loss
+
+
 def train_one_epoch(epoch_index, optimizer, model, loss_fn, train_loader, device):
 	running_loss = 0.0
 	last_loss = 0.0
@@ -52,10 +102,16 @@ def train_one_epoch(epoch_index, optimizer, model, loss_fn, train_loader, device
 		labels = labels.to(device)
 
 		optimizer.zero_grad()
-		outputs = model(inputs)
+		outputs, _, _, rain_logits = model(inputs, return_logits=True)
 		outputs = outputs.squeeze(1)
+		rain_logits = rain_logits.squeeze(1)
 
-		loss = loss_fn(outputs, labels)
+		loss, rain_loss, intensity_loss, dry_loss = loss_fn(
+			outputs,
+			labels,
+			rain_logits,
+			return_components=True,
+		)
 		loss.backward()
 		optimizer.step()
 
@@ -63,6 +119,12 @@ def train_one_epoch(epoch_index, optimizer, model, loss_fn, train_loader, device
 		if i % 10 == 9:
 			last_loss = running_loss / 10
 			print(f"  batch {i + 1} loss: {last_loss}")
+			print(
+				f"  rain={rain_loss.item():.4f} "
+				f"intensity={intensity_loss.item():.4f} "
+				f"dry={dry_loss.item():.4f} "
+				f"weighted_dry={0.25 * dry_loss.item():.4f}"
+			)
 			running_loss = 0.0
 
 	if len(train_loader) > 0 and last_loss == 0.0:
@@ -120,11 +182,11 @@ def main():
 	timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 	run_dir = project_root / "models" / timestamp
 	run_dir.mkdir(parents=True, exist_ok=True)
-	model_path = run_dir / f"model_{timestamp}.pkl"
+	model_path = project_root / "models" / "model_best_latest.pkl"
 	losses_path = run_dir / f"multimodal_convlstm_losses_{timestamp}.csv"
-	norm_stats_path = run_dir / "normalization_stats.json"
+	norm_stats_path = project_root / "models" / "normalization_stats.json"
 	norm_stats_path.write_text(json.dumps(normalization_stats, indent=2), encoding="utf-8")
-	print(f"Saved normalization stats: {norm_stats_path}")
+	print(f"Saved production normalization stats: {norm_stats_path}")
 
 	epoch_number = 0
 	train_losses = []
@@ -155,8 +217,10 @@ def main():
 				vinputs = vinputs.to(device)
 				vlabels = vlabels.to(device)
 
-				voutputs = model(vinputs).squeeze(1)
-				vloss = loss_fn(voutputs, vlabels.float())
+				voutputs, _, _, v_rain_logits = model(vinputs, return_logits=True)
+				voutputs = voutputs.squeeze(1)
+				v_rain_logits = v_rain_logits.squeeze(1)
+				vloss = dual_head_loss(voutputs, vlabels.float(), v_rain_logits)
 				running_vloss += vloss.item()
 
 		avg_val_loss = running_vloss / max(len(test_loader), 1)
@@ -170,6 +234,7 @@ def main():
 			best_state_dict = copy.deepcopy(model.state_dict())
 			epochs_without_improvement = 0
 			torch.save(model.state_dict(), model_path)
+			print(f"Saved best model to production checkpoint: {model_path}")
 		else:
 			epochs_without_improvement += 1
 

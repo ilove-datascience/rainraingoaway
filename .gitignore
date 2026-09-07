@@ -6,3 +6,4 @@ data/
 src/model_*
 __pycache__/
 *.pyc
+userdata.csv

@@ -268,6 +268,75 @@ def _load_multimodal_frame(task):
         return None, 'error', radar_name, env_file_name
 
 
+def build_and_cache_frame(tick, img_name="70km", folder_path_radar=None,
+                          folder_path_env=None, cache_dir=None, verbose=True):
+    """Build the 7-channel multimodal frame for one tick and write it to cache.
+
+    Returns the [7, H, W] float32 array on success, or None if the radar PNG or
+    the matching weather CSV is missing/incomplete (caller can retry later).
+    Never raises for missing env — designed to be safe to call from the scraper.
+    """
+    base = Path(__file__).resolve().parents[2]
+    if folder_path_radar is None:
+        folder_path_radar = str(base / "data" / img_name / "png")
+    if folder_path_env is None:
+        folder_path_env = str(base / "data" / "environment")
+    if cache_dir is None:
+        cache_dir = os.path.join(
+            Path(folder_path_radar).resolve().parents[1], "data", "multimodal_cache"
+        )
+
+    radar_name = str(tick)
+    radar_path = os.path.join(folder_path_radar, f"{radar_name}.png")
+    env_path = os.path.join(folder_path_env, f"weather_{radar_name}.csv")
+
+    if not os.path.exists(radar_path):
+        if verbose:
+            print(f"cache skip {radar_name}: radar png missing")
+        return None
+    if not os.path.exists(env_path):
+        if verbose:
+            print(f"cache skip {radar_name}: missing env file weather_{radar_name}.csv")
+        return None
+
+    # Already cached? Return the cached array.
+    cache_dir_path, cache_file, metadata_file = _get_cache_paths(cache_dir, radar_name)
+    cached = _read_cache(cache_file, metadata_file, radar_path, env_path)
+    if cached is not None:
+        return cached.astype(np.float32)
+
+    try:
+        intensity_points = png_to_xy_intensity(radar_path, include_zero=True)
+        intensity_grid = points_to_intensity_grid(intensity_points)
+        radar_grid = remove_small_echoes(np.asarray(intensity_grid, dtype=np.float32) / 100.0)
+
+        env_stack = build_env_data(
+            env_path, verbose=False,
+            height=radar_grid.shape[0], width=radar_grid.shape[1],
+        )
+        if env_stack is None:
+            if verbose:
+                print(f"cache skip {radar_name}: env data incomplete")
+            return None
+
+        combined = np.concatenate(
+            [radar_grid[np.newaxis, :, :], env_stack], axis=0
+        ).astype(np.float32)
+
+        _write_cache(
+            cache_dir_path / f"{radar_name}.npy",
+            cache_dir_path / f"{radar_name}.json",
+            radar_path, env_path, combined,
+        )
+        if verbose:
+            print(f"cached multimodal frame {radar_name} shape {combined.shape}")
+        return combined
+    except Exception as exc:
+        if verbose:
+            print(f"cache failed for {radar_name}: {exc}")
+        return None
+
+
 def load_data_multimodal(folder_path_radar, folder_path_env, total=None, verbose=True, num_workers=None, use_cache=True, cache_dir=None):
     """Load multimodal radar frames and environmental channels in parallel when possible, with optional disk caching."""
     data = dict()
