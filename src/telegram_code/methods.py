@@ -204,8 +204,8 @@ async def handle_location(update: Update , context: ContextTypes.DEFAULT_TYPE,mo
 	prev_ticks= get_previous_ticks(dt_now, count=SEQUENCE_LENGTH, most_recent_success=success_most_recent)
 	most_recent_tick = datetime.strptime(str(prev_ticks[0]), "%Y%m%d%H%M")
 	next_tick = most_recent_tick + timedelta(minutes=5)
-	with open(r"rainraingoaway\userdata.csv", "r", newline="") as file:
-		repr(file.read())
+	#with open(r"rainraingoaway\userdata.csv", "r", newline="") as file:
+	#	repr(file.read())
 	# Build [1, T, 7, H, W] multimodal input for the gated ConvLSTM_MM model
 	try:
 		x = build_multimodal_input(prev_ticks, folder_path=folder_path, norm_stats=norm_stats)
