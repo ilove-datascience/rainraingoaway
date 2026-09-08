@@ -10,7 +10,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-
+from telegram_code.conversation_handlers import get_conversation_handler
 async def on_bot_error(update, context) -> None:
     # Logs full traceback and a compact update payload for debugging.
     logger.exception("Unhandled telegram error: %s", context.error)
@@ -26,7 +26,8 @@ def run_bot(model, folder_path, norm_stats=None) -> None:
     )
 
     app = Application.builder().token(token).connect_timeout(30).read_timeout(30).write_timeout(30).pool_timeout(30).build()
-    app.add_handler(CommandHandler("test", start))
+    app.add_handler(get_conversation_handler())
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
     app.add_handler(
         MessageHandler(
@@ -39,6 +40,7 @@ def run_bot(model, folder_path, norm_stats=None) -> None:
             ),
         )
     )
+    
     app.add_error_handler(on_bot_error)
     app.run_polling()
 

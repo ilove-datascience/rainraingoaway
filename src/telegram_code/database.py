@@ -39,6 +39,7 @@ def _get_db_connection():
  
 from mysql.connector import Error
 
+
 def add_user(userid) -> bool:
     connection = None
     cursor = None
@@ -73,7 +74,53 @@ def add_user(userid) -> bool:
 
         if connection and connection.is_connected():
             connection.close()
-    
+
+def add_location(userid, lat, long)-> bool:
+    connection = None
+    cursor = None
+
+    try:
+        connection = _get_db_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+                INSERT INTO user_location (
+                    userid,
+                    latitude,
+                    longitude
+                )
+                VALUES (%s, %s, %s)
+
+                ON DUPLICATE KEY UPDATE
+                    latitude = VALUES(latitude),
+                    longitude = VALUES(longitude)
+            """,
+            (
+                userid,
+                lat,
+                long
+            )
+        )
+
+        connection.commit()
+
+        return True
+
+    except Error as e:
+        print(f"Failed to add/update location for {userid}: {e}")
+
+        if connection and connection.is_connected():
+            connection.rollback()
+
+        return False
+
+    finally:
+        if cursor:
+            cursor.close()
+
+        if connection and connection.is_connected():
+            connection.close()
 
 def main():
     connection = None

@@ -15,7 +15,7 @@ from data_processing.data_loading import build_env_data, remove_small_echoes, bu
 from data_processing.pngtojson import points_to_intensity_grid, png_to_xy_intensity
 from scraping.rain_areas import datetime_now_str, get_previous_ticks, SG_OFFSET_HOURS, attempt_get_most_recent
 from masking import lat_long_to_pixel
-from telegram_code.database import add_user
+from telegram_code.database import add_user, add_location
 import pandas as pd
 import numpy as np 
 import torch
@@ -24,7 +24,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import PowerNorm
 from scipy import ndimage
-
+from telegram_code.states import WAITING_FOR_LOCATION
 # Gated rain-prediction pipeline constants (mirror test_multimodal_convlstm.ipynb).
 # threshold=0.55 chosen as the best structural operating point from the validation-only
 # mask sweep: cleanest background/noise rejection with best large-component IoU among
@@ -44,6 +44,8 @@ device = torch.device("cpu")
 CH_RADAR, CH_TEMP, CH_HUM, CH_WIND_U, CH_WIND_V, CH_STATION, CH_DIST = range(7)
 ZSCORE_CHANNELS = [CH_TEMP, CH_HUM, CH_WIND_U, CH_WIND_V]
 
+
+ENV_TICK_TOLERANCE_MINUTES = 15
 
 def clean_rain_mask(probability: np.ndarray) -> np.ndarray:
 	"""Threshold the rain-probability map and drop small components."""
@@ -77,7 +79,6 @@ def apply_normalization(x: torch.Tensor, norm_stats) -> torch.Tensor:
 	return x
 
 
-ENV_TICK_TOLERANCE_MINUTES = 15
 
 
 def _find_usable_env_path(tick, height, width, tolerance_minutes=ENV_TICK_TOLERANCE_MINUTES):
@@ -152,6 +153,8 @@ def build_multimodal_input(prev_ticks, folder_path, norm_stats=None):
 	x = x.unsqueeze(0)  # [1, T, 7, H, W]
 	x = apply_normalization(x, norm_stats)
 	return x
+
+
 def load_token(env_key: str = "tele_api_key") -> str:
     token = os.getenv(env_key)
     if token:
@@ -181,9 +184,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 	print(success)
 	if success:
 		await update.message.reply_text("Please send current location")
+		print("returned waiting status")
+		return WAITING_FOR_LOCATION
 	
 	
-	
+async def receive_location(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    userid = update.effective_user.id
+    location = update.message.location
+
+    latitude = location.latitude
+    longitude = location.longitude
+
+    print(userid, latitude, longitude)
+    
+    success = add_location(userid, lat= latitude, long= longitude)
+    print("rcv lcoation called ")
+    await update.message.reply_text("Location saved")
+
+    return ConversationHandler.END	
 	
 	
 async def handle_msg(update: Update , context: ContextTypes.DEFAULT_TYPE):
