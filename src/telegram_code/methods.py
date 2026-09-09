@@ -1,5 +1,5 @@
 
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from pathlib import Path
 from telegram.ext import ContextTypes, ConversationHandler
 from io import BytesIO
@@ -15,7 +15,7 @@ from data_processing.data_loading import build_env_data, remove_small_echoes, bu
 from data_processing.pngtojson import points_to_intensity_grid, png_to_xy_intensity
 from scraping.rain_areas import datetime_now_str, get_previous_ticks, SG_OFFSET_HOURS, attempt_get_most_recent
 from masking import lat_long_to_pixel
-from telegram_code.database import add_user, add_location
+from telegram_code.database import add_user, add_location, save_mode_choice,get_autoupdate_users,get_location
 import pandas as pd
 import numpy as np 
 import torch
@@ -24,7 +24,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import PowerNorm
 from scipy import ndimage
-from telegram_code.states import WAITING_FOR_LOCATION
+from telegram_code.states import WAITING_FOR_LOCATION, WAITING_FOR_MODE
 # Gated rain-prediction pipeline constants (mirror test_multimodal_convlstm.ipynb).
 # threshold=0.55 chosen as the best structural operating point from the validation-only
 # mask sweep: cleanest background/noise rejection with best large-component IoU among
@@ -187,7 +187,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 		print("returned waiting status")
 		return WAITING_FOR_LOCATION
 	
-	
+
 async def receive_location(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -202,11 +202,81 @@ async def receive_location(
     
     success = add_location(userid, lat= latitude, long= longitude)
     print("rcv lcoation called ")
-    await update.message.reply_text("Location saved")
+    await update.message.reply_text("Location updated/saved")
+    
+    await update.message.reply_text(
+		"Select mode:",
+		reply_markup=ReplyKeyboardMarkup(
+			keyboard = [
+				["1 - Automatic rain updates"],
+				["2 - Manual updates only"]
+			],
+			resize_keyboard=True,
+			one_time_keyboard=True
+		)
+	)
+
+    return WAITING_FOR_MODE
+
+async def update_mode(update, context):
+    userid = update.effective_user.id
+    await update.message.reply_text(
+		"Select mode:",
+		reply_markup=ReplyKeyboardMarkup(
+			keyboard = [
+				["1 - Automatic rain updates"],
+				["2 - Manual updates only"]
+			],
+			resize_keyboard=True,
+			one_time_keyboard=True
+		)
+	)
+
+    return WAITING_FOR_MODE
+async def receive_mode(update, context):
+    userid = update.effective_user.id
+    choice = update.message.text
+
+    if choice == "1 - Automatic rain updates":
+        mode = "automatic"
+
+    elif choice == "2 - Manual updates only":
+        mode = "manual"
+
+    else:
+        await update.message.reply_text(
+            "Please select one of the options below."
+        )
+        return WAITING_FOR_MODE
+
+    print(userid, mode)
+    success = save_mode_choice(userid, mode)
+    if success:
+        print('mode updated')
+        await update.message.reply_text("mode updated", reply_markup=ReplyKeyboardRemove())
+    
+
+    return ConversationHandler.END
+
+
+async def update_location(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    userid = update.effective_user.id
+    location = update.message.location
+
+    latitude = location.latitude
+    longitude = location.longitude
+
+    print(userid, latitude, longitude)
+    
+    success = add_location(userid, lat= latitude, long= longitude)
+    print("rcv lcoation called ")
+    await update.message.reply_text("Location updated/saved")
 
     return ConversationHandler.END	
-	
-	
+
 async def handle_msg(update: Update , context: ContextTypes.DEFAULT_TYPE):
 	user_id = update.effective_user.id
 	user_name= update.effective_user.name
@@ -215,7 +285,7 @@ async def handle_msg(update: Update , context: ContextTypes.DEFAULT_TYPE):
 	#await update.effective_sender.send_message("hfhfifhehfew")
 	await update.message.reply_text("Fuck you mans calling..... i got bad news...")
 
-async def handle_location(update: Update , context: ContextTypes.DEFAULT_TYPE,model,folder_path,norm_stats=None):
+async def handle_locationold(update: Update , context: ContextTypes.DEFAULT_TYPE,model,folder_path,norm_stats=None):
 	user_id = update.effective_user.id
 	user_name= update.effective_user.name
 	location = update.message.location
@@ -356,13 +426,435 @@ async def handle_location(update: Update , context: ContextTypes.DEFAULT_TYPE,mo
 	)
 		
  
+import asyncio
+from datetime import datetime, timedelta
+
+import numpy as np
+import torch
+
+
+async def run_model(model, folder_path, norm_stats=None):
+    """
+    Run the rainfall model using the latest available radar/environment data.
+
+    Returns:
+        dict containing prediction data, or None if input data is unavailable.
+    """
+
+    try:
+        # Get latest radar
+        success_most_recent = await asyncio.to_thread(
+            attempt_get_most_recent
+        )
+
+        # Work out required timestamps
+        dt_now = datetime_now_str(
+            offset_hours=SG_OFFSET_HOURS
+        )
+
+        prev_ticks = get_previous_ticks(
+            dt_now,
+            count=SEQUENCE_LENGTH,
+            most_recent_success=success_most_recent
+        )
+
+        most_recent_tick = datetime.strptime(
+            str(prev_ticks[0]),
+            "%Y%m%d%H%M"
+        )
+
+        next_tick = most_recent_tick + timedelta(minutes=5)
+
+        # Build model input
+        x = await asyncio.to_thread(
+            build_multimodal_input,
+            prev_ticks,
+            folder_path=folder_path,
+            norm_stats=norm_stats
+        )
+
+        device = next(model.parameters()).device
+        x = x.to(device)
+
+        # Inference
+        model.eval()
+
+        with torch.inference_mode():
+            raw_prediction, last_radar, delta, rain_logits = model(
+                x,
+                return_logits=True
+            )
+
+        # ----------------------------
+        # Rain gating
+        # ----------------------------
+
+        raw_prediction = (
+            raw_prediction
+            .detach()
+            .cpu()
+            .squeeze(0)
+            .squeeze(0)
+            .clamp_min(0)
+        )
+
+        rain_probability = (
+            torch.sigmoid(rain_logits)
+            .detach()
+            .cpu()
+            .squeeze(0)
+            .squeeze(0)
+        )
+
+        raw_np = raw_prediction.numpy()
+        probability_np = rain_probability.numpy()
+
+        cleaned_mask = clean_rain_mask(probability_np)
+
+        gated_prediction = raw_np * cleaned_mask
+
+        # Match orientation used by your plotting code
+        pred_plot = np.flipud(gated_prediction)
+
+        return {
+            "prediction": pred_plot,
+            "next_tick": next_tick,
+
+            # Keep these if you want diagnostics later
+            "raw_prediction": raw_np,
+            "rain_probability": probability_np,
+            "cleaned_mask": cleaned_mask,
+            "gated_prediction": gated_prediction,
+
+            "prev_ticks": prev_ticks
+        }
+
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"run_model failed: {exc}")
+        return None
+
+    except Exception as exc:
+        print(f"Unexpected model error: {exc}")
+        return None
     
 
 
-async def set_loc(update: Update , context: ContextTypes.DEFAULT_TYPE):
-    print("set loc attempted.")
-    user_id= update.effective_user.id
-    await update.message.reply_text("Send new current location")
-    #time.sleep(1000)
-    
-    return 0 
+async def handle_location(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    model,
+    folder_path,
+    norm_stats=None
+):
+    location = update.message.location
+
+    latitude = location.latitude
+    longitude = location.longitude
+
+    latest_prediction = context.application.bot_data.get(
+        "latest_prediction"
+    )
+
+    if latest_prediction is None:
+        latest_prediction = await run_model(
+            model,
+            folder_path,
+            norm_stats
+        )
+
+    if latest_prediction is None:
+        await update.message.reply_text(
+            "Prediction isn't available yet."
+        )
+        return
+
+    plot_buffer, caption = await asyncio.to_thread(
+        build_location_forecast,
+        latitude,
+        longitude,
+        latest_prediction
+    )
+
+    await update.message.reply_photo(
+        photo=plot_buffer,
+        caption=caption
+    )
+
+
+def build_location_forecast(latitude, longitude, latest_prediction):
+    pred_plot = latest_prediction["prediction"]
+    next_tick = latest_prediction["next_tick"]
+
+    # Convert user lat/long to pixel
+    pixel_x, pixel_y = lat_long_to_pixel(
+        lat=latitude,
+        long=longitude,
+        width=pred_plot.shape[1],
+        height=pred_plot.shape[0]
+    )
+
+    pixel_y = pred_plot.shape[0] - 1 - pixel_y
+
+    print(f"x pixel: {pixel_x}")
+    print(f"y pixel: {pixel_y}")
+
+    # Prediction value at user's location
+    rain_value_at_location = pred_plot[
+        pixel_y,
+        pixel_x
+    ]
+
+    # Load Singapore base image
+    sg_base_img = np.flipud(
+        plt.imread(
+            str(
+                Path(__file__).resolve().parents[2]
+                / "sgbaseimg_70km.png"
+            )
+        )
+    )
+
+    # Hide very weak predicted rain
+    clear_mask = pred_plot < 0.003
+
+    print(
+        f"Clear pixels below threshold: "
+        f"{np.count_nonzero(clear_mask)}"
+    )
+
+    pred_alpha = np.where(
+        clear_mask,
+        0.0,
+        0.78
+    )
+
+    # -----------------------------
+    # Create plot
+    # -----------------------------
+
+    fig, ax = plt.subplots(
+        figsize=(10, 5.6),
+        dpi=160
+    )
+
+    ax.set_facecolor("white")
+
+    # Singapore base map
+    ax.imshow(
+        sg_base_img,
+        origin="lower",
+        extent=[
+            0,
+            pred_plot.shape[1] - 1,
+            0,
+            pred_plot.shape[0] - 1
+        ],
+        zorder=0
+    )
+
+    # Rain prediction
+    im = ax.imshow(
+        pred_plot,
+        cmap="turbo",
+        origin="lower",
+        alpha=pred_alpha,
+        norm=PowerNorm(
+            gamma=0.6,
+            vmin=0.0,
+            vmax=1.0
+        ),
+        interpolation="nearest",
+        aspect="equal",
+        zorder=1
+    )
+
+    # User location marker
+    ax.scatter(
+        pixel_x,
+        pixel_y,
+        c="hotpink",
+        s=110,
+        edgecolors="white",
+        linewidths=2,
+        zorder=3,
+        label="User location"
+    )
+
+    # Title and labels
+    ax.set_title(
+        f"Rain Prediction Heatmap - {next_tick}",
+        fontsize=13,
+        weight="bold",
+        pad=12
+    )
+
+    ax.set_xlabel("Pixel X")
+    ax.set_ylabel("Pixel Y")
+
+    # Keep full image bounds
+    ax.set_xlim(
+        0,
+        pred_plot.shape[1] - 1
+    )
+
+    ax.set_ylim(
+        0,
+        pred_plot.shape[0] - 1
+    )
+
+    # Colorbar
+    cbar = fig.colorbar(
+        im,
+        ax=ax,
+        fraction=0.035,
+        pad=0.025
+    )
+
+    cbar.set_label(
+        "Prediction intensity",
+        rotation=270,
+        labelpad=18
+    )
+
+    cbar.set_ticks([
+        0.0,
+        0.25,
+        0.5,
+        0.75,
+        1.0
+    ])
+
+    # Legend
+    ax.legend(
+        loc="lower left",
+        bbox_to_anchor=(0.0, 1.02),
+        frameon=False
+    )
+
+    plt.tight_layout()
+
+    # -----------------------------
+    # Save to memory
+    # -----------------------------
+
+    plot_buffer = BytesIO()
+
+    plt.savefig(
+        plot_buffer,
+        format="png",
+        bbox_inches="tight",
+        facecolor="white"
+    )
+
+    plot_buffer.seek(0)
+
+    plt.close(fig)
+
+    # -----------------------------
+    # Caption
+    # -----------------------------
+
+    rain_value_at_location_str = (
+        f"{rain_value_at_location:.3g}"
+    )
+
+    caption = (
+        "Rain prediction heatmap, "
+        "predicted rain value at location: "
+        f"{rain_value_at_location_str}"
+    )
+
+    return plot_buffer, caption
+
+latest_prediction = None
+
+
+async def scheduled_model_run(
+    context,
+    model,
+    folder_path,
+    norm_stats
+):
+    result = await run_model(
+        model,
+        folder_path,
+        norm_stats
+    )
+
+    if result is None:
+        return
+
+    context.application.bot_data["latest_prediction"] = result
+
+    await send_auto_update(
+        context,
+        result
+    )
+        
+
+async def send_auto_update(context, latest_prediction) -> bool:
+    auto_users = await asyncio.to_thread(get_autoupdate_users)
+
+    pred_plot = latest_prediction["prediction"]
+
+    for userid in auto_users:
+        try:
+            location = await asyncio.to_thread(
+                get_location,
+                userid
+            )
+
+            if location is None:
+                continue
+
+            lat, long = location
+
+            lat = float(lat)
+            long = float(long)
+
+            # Convert location to prediction pixel
+            pixel_x, pixel_y = lat_long_to_pixel(
+                lat=lat,
+                long=long,
+                width=pred_plot.shape[1],
+                height=pred_plot.shape[0]
+            )
+
+            pixel_y = pred_plot.shape[0] - 1 - pixel_y
+
+            # Get predicted rain at user's location
+            rain_value = pred_plot[pixel_y, pixel_x]
+
+            print(
+                f"User {userid}: "
+                f"rain value = {rain_value:.3g}"
+            )
+
+            # No meaningful rain -> don't message user
+            if rain_value < 0.003:
+                continue
+
+            print(f"Rain detected for {userid}, sending update")
+
+            # Build image only if we're actually sending it
+            plot_buffer, caption = await asyncio.to_thread(
+                build_location_forecast,
+                lat,
+                long,
+                latest_prediction
+            )
+
+            await context.bot.send_photo(
+                chat_id=userid,
+                photo=plot_buffer,
+                caption=caption
+            )
+
+        except Exception as e:
+            # Don't let one user failure stop updates for everyone
+            print(
+                f"Failed to send auto update "
+                f"to {userid}: {e}"
+            )
+
+    return True

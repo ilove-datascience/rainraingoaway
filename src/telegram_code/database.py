@@ -102,6 +102,17 @@ def add_location(userid, lat, long)-> bool:
                 long
             )
         )
+        cursor.execute(
+            """
+                UPDATE users
+                SET location_flag = 1
+                WHERE userid = %s
+            """,
+            (userid,)
+        )
+
+
+        
 
         connection.commit()
 
@@ -122,6 +133,103 @@ def add_location(userid, lat, long)-> bool:
         if connection and connection.is_connected():
             connection.close()
 
+
+
+def save_mode_choice(userid, mode)->bool:
+    connection = None
+    cursor = None
+    connection = _get_db_connection()
+    cursor = connection.cursor(dictionary=True)
+    userid=userid
+    try:
+        cursor.execute(
+                    """
+                    UPDATE users 
+                    SET mode = %s
+                    WHERE userid = %s
+                    """,
+                    (mode,userid)
+                )
+        
+        connection.commit()
+        return True 
+        
+    except Error as e:
+        print(f"Failed to add user {userid}: {e}")
+
+        if connection and connection.is_connected():
+            connection.rollback()
+
+        return False
+    
+    finally:
+            if cursor:
+                cursor.close()
+    
+            if connection and connection.is_connected():
+                connection.close()
+
+def get_autoupdate_users()-> list:
+    connection = None
+    cursor = None
+
+    try:
+        connection = _get_db_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT userid
+            FROM users
+            WHERE mode = %s
+            """,
+            ("automatic",)
+        )
+
+        rows = cursor.fetchall()
+
+        return [row[0] for row in rows]
+
+    except Error as e:
+        print(f"Failed to get automatic users: {e}")
+        return []
+
+    finally:
+        if cursor:
+            cursor.close()
+
+        if connection and connection.is_connected():
+            connection.close()
+
+def get_location(userid):
+    connection=None
+    cursor = None 
+    try:
+        connection = _get_db_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT latitude, longitude
+            FROM user_location
+            WHERE userid = %s
+            """,
+            (userid)
+        )
+
+        row = cursor.fetchone()
+        return row
+    except Error as e:
+        print(f"Failed to get automatic users: {e}")
+        return []
+
+    finally:
+        if cursor:
+            cursor.close()
+
+        if connection and connection.is_connected():
+            connection.close()
+        
 def main():
     connection = None
     cursor = None

@@ -1,21 +1,25 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from functools import partial
 import logging
-
+from functools import partial
 try:
-    from .methods import start, handle_msg, handle_location, load_token
+    from .methods import start, handle_msg, handle_location, load_token, scheduled_model_run
 except ImportError:
     from methods import start, handle_msg, handle_location, load_token
 
 
 logger = logging.getLogger(__name__)
 
-from telegram_code.conversation_handlers import get_conversation_handler
+from telegram_code.conversation_handlers import get_conversation_handler,get_conversation_handler2
+
 async def on_bot_error(update, context) -> None:
     # Logs full traceback and a compact update payload for debugging.
     logger.exception("Unhandled telegram error: %s", context.error)
     if update is not None:
         logger.error("Update that caused error: %s", update)
+
+
+
 
 
 def run_bot(model, folder_path, norm_stats=None) -> None:
@@ -27,6 +31,17 @@ def run_bot(model, folder_path, norm_stats=None) -> None:
 
     app = Application.builder().token(token).connect_timeout(30).read_timeout(30).write_timeout(30).pool_timeout(30).build()
     app.add_handler(get_conversation_handler())
+    app.add_handler(get_conversation_handler2())
+    app.job_queue.run_repeating(
+        partial(
+            scheduled_model_run,
+            model=model,
+            folder_path=folder_path,
+            norm_stats=norm_stats
+        ),
+        interval=300,
+        first=0
+    )
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
     app.add_handler(
