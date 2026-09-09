@@ -10,9 +10,11 @@ from .data_loading import load_data_multimodal, create_samples
 
 class radar_dataset_multimodal(Dataset):
     def __init__(self, folderloc_radar, folderloc_env, total, list_length=10,
-                 min_list_length=10, num_workers=None, land_use_path=None, use_land_use=True):
+                 min_list_length=10, num_workers=None, land_use_path=None, use_land_use=True,
+                 num_target_steps=1):
         min_list_length = list_length
         self.use_land_use = use_land_use
+        self.num_target_steps = num_target_steps
 
         self.channel_map = {
             "radar": 0,
@@ -54,7 +56,12 @@ class radar_dataset_multimodal(Dataset):
             total=total,
             num_workers=num_workers,
         )
-        self.x, self.y = create_samples(self.data,  list_length=list_length, min_list_length = min_list_length)
+        self.x, self.y = create_samples(
+            self.data,
+            list_length=list_length,
+            min_list_length=min_list_length,
+            num_target_steps=num_target_steps,
+        )
         if self._remove_persistent_echoes:
             self._remove_persistent_input_echoes()
         if len(self.x) > 0:
@@ -226,6 +233,10 @@ class radar_dataset_multimodal(Dataset):
             land_use = self.land_use_masks.unsqueeze(0).expand(sample.shape[0], -1, -1, -1)
             sample = torch.cat([sample, land_use], dim=1)
 
-        # Predict next radar frame only (channel 0), shape [H, W]
-        target = target[0].float()
+        # Predict next radar frame(s) only (channel 0).
+        # num_target_steps=1 -> [H, W]; num_target_steps>1 -> [num_target_steps, H, W]
+        if self.num_target_steps == 1:
+            target = target[0].float()
+        else:
+            target = torch.stack([frame[0].float() for frame in target], dim=0)
         return sample, target

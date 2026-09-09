@@ -96,11 +96,22 @@ def load_specific_data(file_names:list, folder_path):
     return data
 
 #prev_key = first_key
-def create_samples(data, list_length=10, min_list_length = 7):
+def create_samples(data, list_length=10, min_list_length = 7, num_target_steps=1):
+    """Group consecutive 5-minute frames into (inputs, targets) samples.
+
+    `num_target_steps` controls how many trailing frames are split off as the
+    target instead of just one (multi-step/direct forecasting). Input length
+    is unaffected by this — only the target grows. With num_target_steps=1
+    this reproduces the original single-step behaviour exactly.
+    """
     count = 1 
     data_grouped = list()
     sample_list= list()
     
+    # Same shelving threshold as before when num_target_steps=1; grows by
+    # (num_target_steps - 1) so every extra target step adds one more frame
+    # to the group without shrinking the input length.
+    group_size = list_length + num_target_steps - 1
     
     ttl_cnt = 0 
     keys = sorted(data.keys())
@@ -125,13 +136,13 @@ def create_samples(data, list_length=10, min_list_length = 7):
             
             count=1
             
-        elif change == 5 and count <list_length: # add value to sample if we arent at the limit
+        elif change == 5 and count <group_size: # add value to sample if we arent at the limit
             sample_list.append(value)
             
             #print("appended")
             count += 1 
             
-        elif change == 5 and count >= list_length: # shelve sample and start a new sample
+        elif change == 5 and count >= group_size: # shelve sample and start a new sample
             data_grouped.append(sample_list)
            # print(f"sample with lenth {len(sample_list)} created")
             sample_list = list()
@@ -159,13 +170,16 @@ def create_samples(data, list_length=10, min_list_length = 7):
 
     for i in data_grouped:
         length= len(i)
-        
-        #print(length)
-        last = i.pop(length-1)
-        length= len(i)
-        
-        x.append(i)
-        y.append(last)
+
+        if num_target_steps == 1:
+            last = i.pop(length-1)
+            x.append(i)
+            y.append(last)
+        else:
+            targets = i[-num_target_steps:]
+            inputs = i[:-num_target_steps]
+            x.append(inputs)
+            y.append(targets)
         
     return x,y
             
