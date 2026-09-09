@@ -214,7 +214,7 @@ def get_location(userid):
             FROM user_location
             WHERE userid = %s
             """,
-            (userid)
+            (userid,)
         )
 
         row = cursor.fetchone()
