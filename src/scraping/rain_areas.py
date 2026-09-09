@@ -98,6 +98,7 @@ def run_scraper_forever(
     from data_processing.data_loading import build_and_cache_frame
 
     pending_cache: set[int] = set()
+    MAX_PENDING_AGE_MINUTES = 20
 
     while True:
 
@@ -114,52 +115,52 @@ def run_scraper_forever(
 
             pending_cache.add(current_tick)
 
-            while pending_cache:
+            still_pending = set()
 
-                still_pending = set()
+            for tick in sorted(pending_cache):
 
-                for tick in sorted(pending_cache):
+                tick_dt = datetime.strptime(str(tick), "%Y%m%d%H%M")
+                age_minutes = (dt_now - tick_dt).total_seconds() / 60
 
-                    try:
+                if age_minutes > MAX_PENDING_AGE_MINUTES:
+                    print(
+                        f"Dropping stale cache tick {tick} "
+                        f"(unresolved after {age_minutes:.0f} min)"
+                    )
+                    continue
 
-                        result = build_and_cache_frame(
-                            tick,
-                            img_name="70km",
-                            verbose=False
-                        )
+                try:
 
-                        if result is None:
-                            still_pending.add(tick)
+                    result = build_and_cache_frame(
+                        tick,
+                        img_name="70km",
+                        verbose=False
+                    )
 
-                        else:
-
-                            print(f"Multimodal frame ready for {tick}")
-
-                            if model_ready_queue is not None:
-                                model_ready_queue.put(tick)
-
-                    except Exception as exc:
-
-                        print(f"Cache attempt failed for {tick}: {exc}")
+                    if result is None:
                         still_pending.add(tick)
 
-                pending_cache = set(
-                    sorted(still_pending)[-12:]
-                )
+                    else:
 
-                if not pending_cache:
-                    break
+                        print(f"Multimodal frame ready for {tick}")
 
+                        if model_ready_queue is not None:
+                            model_ready_queue.put(tick)
+
+                except Exception as exc:
+
+                    print(f"Cache attempt failed for {tick}: {exc}")
+                    still_pending.add(tick)
+
+            pending_cache = set(
+                sorted(still_pending)[-12:]
+            )
+
+            if pending_cache:
                 print(
                     f"Pending multimodal cache ticks: "
                     f"{sorted(pending_cache)}"
                 )
-
-                if fell_back_any:
-                    break
-
-                print("Retrying cache in 10 seconds")
-                time.sleep(10)
 
         if fell_back_any:
 

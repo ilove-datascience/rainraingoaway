@@ -3,7 +3,7 @@ import json
 import os
 import threading
 import torch 
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
 import numpy as np 
@@ -15,6 +15,7 @@ RADAR_CLEANING_VERSION = "connected_components_v1_min4_strong010"
 RADAR_RAIN_THRESHOLD = 0.01
 RADAR_MIN_PIXELS = 4
 RADAR_STRONG_THRESHOLD = 0.10
+ENV_TICK_TOLERANCE_MINUTES = 15
 
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parents[1]))
@@ -268,6 +269,29 @@ def _load_multimodal_frame(task):
         return None, 'error', radar_name, env_file_name
 
 
+def _find_env_csv(tick, folder_path_env, tolerance_minutes=ENV_TICK_TOLERANCE_MINUTES):
+    """Return a weather CSV path usable for `tick`, trying nearby ticks if needed.
+
+    Radar and weather are scraped on independent cadences, so their timestamps
+    can drift a few minutes apart. Search outward in 5-minute steps before
+    giving up.
+    """
+    exact_path = os.path.join(folder_path_env, f"weather_{tick}.csv")
+    if os.path.exists(exact_path):
+        return exact_path
+
+    tick_dt = datetime.strptime(str(tick), "%Y%m%d%H%M")
+    for offset in range(5, tolerance_minutes + 1, 5):
+        for candidate_dt in (tick_dt - timedelta(minutes=offset), tick_dt + timedelta(minutes=offset)):
+            candidate_path = os.path.join(
+                folder_path_env, f"weather_{candidate_dt.strftime('%Y%m%d%H%M')}.csv"
+            )
+            if os.path.exists(candidate_path):
+                return candidate_path
+
+    return None
+
+
 def build_and_cache_frame(tick, img_name="70km", folder_path_radar=None,
                           folder_path_env=None, cache_dir=None, verbose=True):
     """Build the 7-channel multimodal frame for one tick and write it to cache.
@@ -288,15 +312,19 @@ def build_and_cache_frame(tick, img_name="70km", folder_path_radar=None,
 
     radar_name = str(tick)
     radar_path = os.path.join(folder_path_radar, f"{radar_name}.png")
-    env_path = os.path.join(folder_path_env, f"weather_{radar_name}.csv")
 
     if not os.path.exists(radar_path):
         if verbose:
             print(f"cache skip {radar_name}: radar png missing")
         return None
-    if not os.path.exists(env_path):
+
+    env_path = _find_env_csv(tick, folder_path_env)
+    if env_path is None:
         if verbose:
-            print(f"cache skip {radar_name}: missing env file weather_{radar_name}.csv")
+            print(
+                f"cache skip {radar_name}: no weather CSV within "
+                f"{ENV_TICK_TOLERANCE_MINUTES} min of weather_{radar_name}.csv"
+            )
         return None
 
     # Already cached? Return the cached array.
