@@ -1,12 +1,13 @@
-import json
-import time
-import random # For jittering sleep intervals
+import queue
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-from datetime import datetime, timedelta, timezone
 
 import requests
+
+from scraping.gov_api import sleep_until_next_five_minute_boundary
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -49,9 +50,8 @@ def seconds_until_next_five_minute_tick(offset_hours: int = 0) -> float:
 
 
 def fallback_sleep_seconds(offset_hours: int = SG_OFFSET_HOURS) -> float:
-    """Return a shorter retry wait that stays before the next 5-minute tick."""
-    remaining = seconds_until_next_five_minute_tick(offset_hours=offset_hours)
-    return max(5.0, remaining * FALLBACK_SLEEP_RATIO)
+    """Return the fixed retry wait used when radar is unavailable."""
+    return 15.0
 
 
 def scrape_once(img_names: tuple[str, ...] = ("70km", "240km")) -> bool:
@@ -69,43 +69,6 @@ def scrape_once(img_names: tuple[str, ...] = ("70km", "240km")) -> bool:
             print(f"Failed to capture {img_name}: {exc}")
     return fell_back_any
 
-
-def run_scraper_forever(
-    img_names: tuple[str, ...] = (["70km"]),
-    interval_seconds: int = FETCH_INTERVAL_SECONDS,
-) -> None:
-    """Continuously fetch radar images and retry sooner after a fallback.
-
-    After each pass, also build+cache the 70km multimodal frame. Ticks whose
-    weather CSV isn't ready yet are kept in `pending_cache` and retried on the
-    next pass (by then the env fetch has usually caught up).
-    """
-    from data_processing.data_loading import build_and_cache_frame
-
-    pending_cache: set[int] = set()
-    while True:
-        fell_back_any = scrape_once(img_names)
-
-        # Cache multimodal frames for 70km only; retry pending ticks next pass.
-        if "70km" in img_names:
-            dt_now = datetime_now_str(offset_hours=SG_OFFSET_HOURS)
-            pending_cache.add(dt_now)
-            still_pending = set()
-            for tick in sorted(pending_cache):
-                try:
-                    if build_and_cache_frame(tick, img_name="70km", verbose=False) is None:
-                        still_pending.add(tick)
-                except Exception as exc:
-                    print(f"cache attempt failed for {tick}: {exc}")
-                    still_pending.add(tick)
-            # Don't let the pending set grow unbounded across long outages.
-            pending_cache = set(sorted(still_pending)[-12:])
-            if pending_cache:
-                print(f"Pending multimodal cache ticks: {sorted(pending_cache)}")
-
-        sleep_seconds = fallback_sleep_seconds() if fell_back_any else interval_seconds
-        print(f"Sleeping {sleep_seconds:.1f}s until next 5-minute tick")
-        time.sleep(sleep_seconds)
 
 def floor_to_5min(dt: datetime) -> datetime:
     return dt.replace(
@@ -125,8 +88,95 @@ def attempt_get_most_recent(img_name = "70km", dt_now:datetime | None= None) -> 
         print(f"Radar for {dt_now}, not available")
     
     return not fellback 
-    
-    
+
+def run_scraper_forever(
+    img_names: tuple[str, ...] = ("70km",),
+    interval_seconds: int = FETCH_INTERVAL_SECONDS,
+    model_ready_queue: queue.Queue | None = None,
+) -> None:
+
+    from data_processing.data_loading import build_and_cache_frame
+
+    pending_cache: set[int] = set()
+
+    while True:
+
+        fell_back_any = scrape_once(img_names)
+
+        if "70km" in img_names:
+
+            dt_now = datetime_now_str(offset_hours=SG_OFFSET_HOURS)
+            dt_now = datetime.strptime(str(dt_now), "%Y%m%d%H%M")
+
+            current_tick = int(
+                floor_to_5min(dt_now).strftime("%Y%m%d%H%M")
+            )
+
+            pending_cache.add(current_tick)
+
+            while pending_cache:
+
+                still_pending = set()
+
+                for tick in sorted(pending_cache):
+
+                    try:
+
+                        result = build_and_cache_frame(
+                            tick,
+                            img_name="70km",
+                            verbose=False
+                        )
+
+                        if result is None:
+                            still_pending.add(tick)
+
+                        else:
+
+                            print(f"Multimodal frame ready for {tick}")
+
+                            if model_ready_queue is not None:
+                                model_ready_queue.put(tick)
+
+                    except Exception as exc:
+
+                        print(f"Cache attempt failed for {tick}: {exc}")
+                        still_pending.add(tick)
+
+                pending_cache = set(
+                    sorted(still_pending)[-12:]
+                )
+
+                if not pending_cache:
+                    break
+
+                print(
+                    f"Pending multimodal cache ticks: "
+                    f"{sorted(pending_cache)}"
+                )
+
+                if fell_back_any:
+                    break
+
+                print("Retrying cache in 10 seconds")
+                time.sleep(10)
+
+        if fell_back_any:
+
+            sleep_seconds = fallback_sleep_seconds()
+
+            print(
+                f"Radar unavailable, retrying in "
+                f"{sleep_seconds:.1f}s"
+            )
+
+            time.sleep(sleep_seconds)
+
+        else:
+
+            print("Sleeping until next 5-minute tick")
+            sleep_until_next_five_minute_boundary()
+            
 def get_previous_ticks(dt: int, count: int = 4,most_recent_success=False) -> list[int]:
     """Return a list of the previous `count` 5-m
     inute ticks as YYYYMMDDHHMM ints.
@@ -246,30 +296,14 @@ def fetch_radar_snapshot(img_name: str, dt: int | None = None) -> tuple[int, Pat
         raise RuntimeError("Failed to download radar image")
 
     output_png_dir = DATA_DIR / img_name / "png"
-  #  output_json_dir = DATA_DIR / img_name / "json"
     output_png_dir.mkdir(parents=True, exist_ok=True)
-   # output_json_dir.mkdir(parents=True, exist_ok=True)
 
     png_path = output_png_dir / f"{dt}.png"
-   # json_path = output_json_dir / f"{dt}.json"
-
     png_path.write_bytes(response.content)
 
-   # points = png_to_xy_intensity(png_path)
-   # json_points = [
-   #     {"x": point["x"], "y": point["y"], "value": point["intensity"]}
-   #     for point in points
-   # ]
-
-    #json_path.write_text(
-    #    json.dumps(json_points, indent=2),
-    #    encoding="utf-8",
-   # )
-
     print(f"Saved {png_path}")
-   # print(f"Saved {json_path} ({len(json_points)} points)")
 
-    return dt, png_path, fell_back #, json_path
+    return dt, png_path, fell_back
 
 
 def main() -> None:

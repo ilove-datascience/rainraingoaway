@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta
 import os
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Union
 from zoneinfo import ZoneInfo
@@ -195,6 +195,7 @@ def main() -> None:
             data_df = fetch_once()
             output_path = save_to_csv(data_df)
             print(f"saved {len(data_df)} rows to {output_path}")
+            
         except Exception as exc:
             # Never let a transient failure (network error, API hiccup, etc.) kill the loop.
             print(f"weather fetch failed, will retry next tick: {exc}")

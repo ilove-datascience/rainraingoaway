@@ -1,29 +1,30 @@
-
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from pathlib import Path
-from telegram.ext import ContextTypes, ConversationHandler
-from io import BytesIO
+import asyncio
 import os
+import queue
 import sys
-import csv
 from datetime import datetime, timedelta
+from io import BytesIO
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from matplotlib.colors import PowerNorm
+from scipy import ndimage
+from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram.ext import ContextTypes, ConversationHandler
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from data_processing.data_loading import build_env_data, remove_small_echoes, build_and_cache_frame
-from data_processing.pngtojson import points_to_intensity_grid, png_to_xy_intensity
-from scraping.rain_areas import datetime_now_str, get_previous_ticks, SG_OFFSET_HOURS, attempt_get_most_recent
+from data_processing.data_loading import build_and_cache_frame, build_env_data, remove_small_echoes
+from data_processing.pngtojson import png_to_xy_intensity, points_to_intensity_grid
 from masking import lat_long_to_pixel
-from telegram_code.database import add_user, add_location, save_mode_choice,get_autoupdate_users,get_location
-import pandas as pd
-import numpy as np 
-import torch
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from matplotlib.colors import PowerNorm
-from scipy import ndimage
+from scraping.rain_areas import SG_OFFSET_HOURS, attempt_get_most_recent, datetime_now_str, get_previous_ticks
+from telegram_code.database import add_location, add_user, get_autoupdate_users, get_location, save_mode_choice
 from telegram_code.states import WAITING_FOR_LOCATION, WAITING_FOR_MODE
 # Gated rain-prediction pipeline constants (mirror test_multimodal_convlstm.ipynb).
 # threshold=0.55 chosen as the best structural operating point from the validation-only
@@ -259,24 +260,6 @@ async def receive_mode(update, context):
     return ConversationHandler.END
 
 
-async def update_location(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    userid = update.effective_user.id
-    location = update.message.location
-
-    latitude = location.latitude
-    longitude = location.longitude
-
-    print(userid, latitude, longitude)
-    
-    success = add_location(userid, lat= latitude, long= longitude)
-    print("rcv lcoation called ")
-    await update.message.reply_text("Location updated/saved")
-
-    return ConversationHandler.END	
-
 async def handle_msg(update: Update , context: ContextTypes.DEFAULT_TYPE):
 	user_id = update.effective_user.id
 	user_name= update.effective_user.name
@@ -284,153 +267,6 @@ async def handle_msg(update: Update , context: ContextTypes.DEFAULT_TYPE):
 	print(f"{user_id}-{user_name}, {text}")
 	#await update.effective_sender.send_message("hfhfifhehfew")
 	await update.message.reply_text("Fuck you mans calling..... i got bad news...")
-
-async def handle_locationold(update: Update , context: ContextTypes.DEFAULT_TYPE,model,folder_path,norm_stats=None):
-	user_id = update.effective_user.id
-	user_name= update.effective_user.name
-	location = update.message.location
-	long= location.longitude
-	lat = location.latitude
-	print(f"Lat:{lat}, Long:{long}")
-	success_most_recent = attempt_get_most_recent()
-	dt_now= datetime_now_str(offset_hours=SG_OFFSET_HOURS)	
-	prev_ticks= get_previous_ticks(dt_now, count=SEQUENCE_LENGTH, most_recent_success=success_most_recent)
-	most_recent_tick = datetime.strptime(str(prev_ticks[0]), "%Y%m%d%H%M")
-	next_tick = most_recent_tick + timedelta(minutes=5)
-	#with open(r"rainraingoaway\userdata.csv", "r", newline="") as file:
-	#	repr(file.read())
-	# Build [1, T, 7, H, W] multimodal input for the gated ConvLSTM_MM model
-	try:
-		x = build_multimodal_input(prev_ticks, folder_path=folder_path, norm_stats=norm_stats)
-	except (FileNotFoundError, ValueError) as exc:
-		print(f"build_multimodal_input failed: {exc}")
-		await update.message.reply_text(
-			"Weather/radar data for the latest ticks isn't available yet — please try again in a few minutes."
-		)
-		return
- 
-	x = x.to(next(model.parameters()).device)
-	with torch.no_grad():
-		raw_prediction, last_radar, delta, rain_logits = model(x, return_logits=True)
-
-	# Gated rain-prediction pipeline (rain prob used as a gate)
-	raw_pred_plot = raw_prediction.detach().cpu().squeeze(0).squeeze(0).clamp_min(0)
-	rain_probability = torch.sigmoid(rain_logits).detach().cpu().squeeze(0).squeeze(0)
-
-	raw_np = raw_pred_plot.numpy()
-	prob_np = rain_probability.numpy()
-
-	cleaned_mask = clean_rain_mask(prob_np)              # boolean rain mask gate
-	gated_prediction = raw_np * cleaned_mask             # final gated output
-
-	# Gating images exposed as variables
-	gating_rain_probability = prob_np
-	gating_cleaned_mask = cleaned_mask
-	gating_gated_prediction = gated_prediction
-
-	pred_plot = np.flipud(gated_prediction)
-
-	pixel_x, pixel_y = lat_long_to_pixel(
-		lat=lat,
-		long=long,
-		width=pred_plot.shape[1],
-		height=pred_plot.shape[0]
-	)
-
-	pixel_y = pred_plot.shape[0] - 1 - pixel_y
-
-	print(f"x pixel: {pixel_x}")
-	print(f"y pixel: {pixel_y}")
-	rain_value_at_location = pred_plot[pixel_y, pixel_x]
-	sg_base_img = np.flipud(plt.imread(str(Path(__file__).resolve().parents[2] / "sgbaseimg_70km.png")))
-	clear_mask = pred_plot < 0.003
-	print(f"Clear pixels below threshold: {np.count_nonzero(clear_mask)}")
-	pred_alpha = np.where(clear_mask, 0.0, 0.78)
-	# nicer plot
-	fig, ax = plt.subplots(figsize=(10, 5.6), dpi=160)
-	ax.set_facecolor("white")
-	ax.imshow(
-		sg_base_img,
-		origin="lower",
-		extent=[0, pred_plot.shape[1] - 1, 0, pred_plot.shape[0] - 1],
-		zorder=0
-	)
-
-	im = ax.imshow(
-		pred_plot,
-		 cmap="turbo",
-		origin="lower",
-		alpha=pred_alpha,
-		norm=PowerNorm(gamma=0.6, vmin=0.0, vmax=1.0),
-		interpolation="nearest",
-		aspect="equal",
-		zorder=1
-	)
-
-	# user location marker
-	ax.scatter(
-		pixel_x,
-		pixel_y,
-		c="hotpink",
-		s=110,
-		edgecolors="white",
-		linewidths=2,
-		zorder=3,
-		label="User location"
-	)
-
-	# title and labels
-	ax.set_title(
-		f"Rain Prediction Heatmap - {next_tick}",
-		fontsize=13,
-		weight="bold",
-		pad=12
-	)
-
-	ax.set_xlabel("Pixel X")
-	ax.set_ylabel("Pixel Y")
-
-	# keep full image bounds
-	ax.set_xlim(0, pred_plot.shape[1] - 1)
-	ax.set_ylim(0, pred_plot.shape[0] - 1)
-
-	# colorbar
-	cbar = fig.colorbar(
-		im,
-		ax=ax,
-		fraction=0.035,
-		pad=0.025
-	)
-
-	cbar.set_label("Prediction intensity", rotation=270, labelpad=18)
-	cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
-
-	# legend outside the plot
-	ax.legend(
-		loc="lower left",
-		bbox_to_anchor=(0.0, 1.02),
-		frameon=False
-	)
-
-	plt.tight_layout()
-
-	plot_buffer = BytesIO()
-	plt.savefig(plot_buffer, format="png", bbox_inches="tight", facecolor="white")
-	plot_buffer.seek(0)
-	plt.close(fig)
-	rain_value_at_location_str = f"{rain_value_at_location:.3g}"
-
-	await update.message.reply_photo(
-		photo=plot_buffer,
-		caption=f"Rain prediction heatmap, predicted rain value at location: {rain_value_at_location_str}"
-	)
-		
- 
-import asyncio
-from datetime import datetime, timedelta
-
-import numpy as np
-import torch
 
 
 async def run_model(model, folder_path, norm_stats=None):
@@ -581,6 +417,116 @@ async def handle_location(
     )
 
 
+def get_latest_radar_png(folder_path) -> Path | None:
+    """Return the most recently captured raw radar PNG, or None if there are none."""
+    pngs = sorted(Path(folder_path).glob("*.png"))
+    return pngs[-1] if pngs else None
+
+
+def render_heatmap(grid, title, colorbar_label, marker=None):
+    """Render `grid` (values in [0, 1]) over the Singapore base map.
+
+    Shared plot style for both model predictions and raw radar snapshots.
+    """
+    sg_base_img = np.flipud(
+        plt.imread(
+            str(Path(__file__).resolve().parents[2] / "sgbaseimg_70km.png")
+        )
+    )
+
+    clear_mask = grid < 0.003
+    alpha = np.where(clear_mask, 0.0, 0.78)
+
+    fig, ax = plt.subplots(figsize=(10, 5.6), dpi=160)
+    ax.set_facecolor("white")
+
+    ax.imshow(
+        sg_base_img,
+        origin="lower",
+        extent=[0, grid.shape[1] - 1, 0, grid.shape[0] - 1],
+        zorder=0
+    )
+
+    im = ax.imshow(
+        grid,
+        cmap="turbo",
+        origin="lower",
+        alpha=alpha,
+        norm=PowerNorm(gamma=0.6, vmin=0.0, vmax=1.0),
+        interpolation="nearest",
+        aspect="equal",
+        zorder=1
+    )
+
+    if marker is not None:
+        pixel_x, pixel_y = marker
+        ax.scatter(
+            pixel_x,
+            pixel_y,
+            c="hotpink",
+            s=110,
+            edgecolors="white",
+            linewidths=2,
+            zorder=3,
+            label="User location"
+        )
+
+    ax.set_title(title, fontsize=13, weight="bold", pad=12)
+    ax.set_xlabel("Pixel X")
+    ax.set_ylabel("Pixel Y")
+    ax.set_xlim(0, grid.shape[1] - 1)
+    ax.set_ylim(0, grid.shape[0] - 1)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.025)
+    cbar.set_label(colorbar_label, rotation=270, labelpad=18)
+    cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
+
+    if marker is not None:
+        ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.02), frameon=False)
+
+    plt.tight_layout()
+
+    plot_buffer = BytesIO()
+    plt.savefig(plot_buffer, format="png", bbox_inches="tight", facecolor="white")
+    plot_buffer.seek(0)
+    plt.close(fig)
+
+    return plot_buffer
+
+
+def build_radar_snapshot_plot(png_path):
+    """Render the raw radar PNG at `png_path` using the same style as predictions."""
+    intensity_points = png_to_xy_intensity(str(png_path), include_zero=True)
+    intensity_grid = points_to_intensity_grid(intensity_points)
+    radar_grid = remove_small_echoes(np.asarray(intensity_grid, dtype=np.float32) / 100.0)
+    radar_plot = np.flipud(radar_grid)
+
+    tick = png_path.stem
+    plot_buffer = render_heatmap(
+        radar_plot,
+        title=f"Raw Radar - {tick}",
+        colorbar_label="Radar intensity",
+    )
+
+    return plot_buffer, f"Latest raw radar snapshot: {tick}"
+
+
+async def handle_actual(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    folder_path
+):
+    latest_png = await asyncio.to_thread(get_latest_radar_png, folder_path)
+
+    if latest_png is None:
+        await update.message.reply_text("No radar images available yet.")
+        return
+
+    plot_buffer, caption = await asyncio.to_thread(build_radar_snapshot_plot, latest_png)
+
+    await update.message.reply_photo(photo=plot_buffer, caption=caption)
+
+
 def build_location_forecast(latitude, longitude, latest_prediction):
     pred_plot = latest_prediction["prediction"]
     next_tick = latest_prediction["next_tick"]
@@ -604,151 +550,12 @@ def build_location_forecast(latitude, longitude, latest_prediction):
         pixel_x
     ]
 
-    # Load Singapore base image
-    sg_base_img = np.flipud(
-        plt.imread(
-            str(
-                Path(__file__).resolve().parents[2]
-                / "sgbaseimg_70km.png"
-            )
-        )
-    )
-
-    # Hide very weak predicted rain
-    clear_mask = pred_plot < 0.003
-
-    print(
-        f"Clear pixels below threshold: "
-        f"{np.count_nonzero(clear_mask)}"
-    )
-
-    pred_alpha = np.where(
-        clear_mask,
-        0.0,
-        0.78
-    )
-
-    # -----------------------------
-    # Create plot
-    # -----------------------------
-
-    fig, ax = plt.subplots(
-        figsize=(10, 5.6),
-        dpi=160
-    )
-
-    ax.set_facecolor("white")
-
-    # Singapore base map
-    ax.imshow(
-        sg_base_img,
-        origin="lower",
-        extent=[
-            0,
-            pred_plot.shape[1] - 1,
-            0,
-            pred_plot.shape[0] - 1
-        ],
-        zorder=0
-    )
-
-    # Rain prediction
-    im = ax.imshow(
+    plot_buffer = render_heatmap(
         pred_plot,
-        cmap="turbo",
-        origin="lower",
-        alpha=pred_alpha,
-        norm=PowerNorm(
-            gamma=0.6,
-            vmin=0.0,
-            vmax=1.0
-        ),
-        interpolation="nearest",
-        aspect="equal",
-        zorder=1
+        title=f"Rain Prediction Heatmap - {next_tick}",
+        colorbar_label="Prediction intensity",
+        marker=(pixel_x, pixel_y),
     )
-
-    # User location marker
-    ax.scatter(
-        pixel_x,
-        pixel_y,
-        c="hotpink",
-        s=110,
-        edgecolors="white",
-        linewidths=2,
-        zorder=3,
-        label="User location"
-    )
-
-    # Title and labels
-    ax.set_title(
-        f"Rain Prediction Heatmap - {next_tick}",
-        fontsize=13,
-        weight="bold",
-        pad=12
-    )
-
-    ax.set_xlabel("Pixel X")
-    ax.set_ylabel("Pixel Y")
-
-    # Keep full image bounds
-    ax.set_xlim(
-        0,
-        pred_plot.shape[1] - 1
-    )
-
-    ax.set_ylim(
-        0,
-        pred_plot.shape[0] - 1
-    )
-
-    # Colorbar
-    cbar = fig.colorbar(
-        im,
-        ax=ax,
-        fraction=0.035,
-        pad=0.025
-    )
-
-    cbar.set_label(
-        "Prediction intensity",
-        rotation=270,
-        labelpad=18
-    )
-
-    cbar.set_ticks([
-        0.0,
-        0.25,
-        0.5,
-        0.75,
-        1.0
-    ])
-
-    # Legend
-    ax.legend(
-        loc="lower left",
-        bbox_to_anchor=(0.0, 1.02),
-        frameon=False
-    )
-
-    plt.tight_layout()
-
-    # -----------------------------
-    # Save to memory
-    # -----------------------------
-
-    plot_buffer = BytesIO()
-
-    plt.savefig(
-        plot_buffer,
-        format="png",
-        bbox_inches="tight",
-        facecolor="white"
-    )
-
-    plot_buffer.seek(0)
-
-    plt.close(fig)
 
     # -----------------------------
     # Caption
@@ -766,15 +573,26 @@ def build_location_forecast(latitude, longitude, latest_prediction):
 
     return plot_buffer, caption
 
-latest_prediction = None
 
-
-async def scheduled_model_run(
+async def process_new_timestamp(
     context,
+    timestamp,
     model,
     folder_path,
     norm_stats
 ):
+    # Prevent processing the same timestamp twice
+    last_timestamp = context.application.bot_data.get(
+        "last_model_timestamp"
+    )
+
+    if timestamp == last_timestamp:
+        print(f"{timestamp} already processed")
+        return False
+
+    print(f"New timestamp detected: {timestamp}")
+    print("Running model...")
+
     result = await run_model(
         model,
         folder_path,
@@ -782,16 +600,65 @@ async def scheduled_model_run(
     )
 
     if result is None:
+        print("Model run failed")
+        return False
+
+    # Save latest prediction
+    context.application.bot_data["latest_prediction"] = result
+
+    # Mark timestamp as processed
+    context.application.bot_data["last_model_timestamp"] = timestamp
+
+    print(
+        f"Prediction generated for "
+        f"{result['next_tick']}"
+    )
+
+    # Send alerts to automatic users
+    await send_auto_update(
+        context,
+        result
+    )
+
+    return True
+
+
+async def check_model_queue(
+    context,
+    model,
+    folder_path,
+    norm_stats,
+    model_ready_queue
+):
+    try:
+        tick = model_ready_queue.get_nowait()
+    except queue.Empty:
         return
 
-    context.application.bot_data["latest_prediction"] = result
+    print(f"New cached timestamp ready: {tick}")
+
+    result = await run_model(
+        model,
+        folder_path,
+        norm_stats
+    )
+
+    if result is None:
+        print(f"Model run failed for {tick}")
+        return
+
+    context.application.bot_data[
+        "latest_prediction"
+    ] = result
+
+    print(
+        f"Prediction ready for {result['next_tick']}"
+    )
 
     await send_auto_update(
         context,
         result
     )
-        
-
 async def send_auto_update(context, latest_prediction) -> bool:
     auto_users = await asyncio.to_thread(get_autoupdate_users)
 
@@ -832,7 +699,8 @@ async def send_auto_update(context, latest_prediction) -> bool:
 
             # No meaningful rain -> don't message user
             if rain_value < 0.003:
-                continue
+                #continue
+                pass
 
             print(f"Rain detected for {userid}, sending update")
 

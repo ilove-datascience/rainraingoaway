@@ -1,21 +1,7 @@
 
+from telegram.ext import CommandHandler, ConversationHandler, MessageHandler, filters
 
-from telegram.ext import ContextTypes, ConversationHandler
-
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from telegram_code.methods import start, receive_location, update_mode
-# conversation_handlers.py
-
-from telegram.ext import (
-    ConversationHandler,
-    CommandHandler,
-    MessageHandler,
-    filters,
-)
-
-from telegram_code.methods import start, receive_location, receive_mode
-
-
+from telegram_code.methods import receive_location, receive_mode, start, update_mode
 from telegram_code.states import WAITING_FOR_LOCATION, WAITING_FOR_MODE
 
 
