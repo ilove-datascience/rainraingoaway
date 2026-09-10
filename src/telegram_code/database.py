@@ -50,8 +50,9 @@ def add_user(userid) -> bool:
 
         cursor.execute(
             """
-            INSERT INTO users (userid)
-            VALUES (%s)
+            INSERT INTO users (userid, mode)
+            VALUES (%s, 'manual')
+            ON DUPLICATE KEY UPDATE userid=VALUES(userid)
             """,
             (userid,)
         )
@@ -82,6 +83,9 @@ def add_location(userid, lat, long)-> bool:
     try:
         connection = _get_db_connection()
         cursor = connection.cursor()
+        cursor.execute('SELECT userid FROM users WHERE userid=%s FOR UPDATE', (userid,))
+        if cursor.fetchone() is None:
+            return False
 
         cursor.execute(
             """
@@ -94,7 +98,12 @@ def add_location(userid, lat, long)-> bool:
 
                 ON DUPLICATE KEY UPDATE
                     latitude = VALUES(latitude),
-                    longitude = VALUES(longitude)
+                    longitude = VALUES(longitude),
+                    state = 'predicted norain',
+                    rain_observed_at = NULL, rain_forecast_at = NULL,
+                    radar_raining = NULL, rain_alert_at = NULL, rain_alert_reason = NULL,
+                    rain_forecast_value = NULL, rain_alert_value = NULL,
+                    rain_episode_reason = NULL, rain_settings_version=rain_settings_version+1
             """,
             (
                 userid,
@@ -135,39 +144,48 @@ def add_location(userid, lat, long)-> bool:
 
 
 
-def save_mode_choice(userid, mode)->bool:
+def save_mode_choice(userid, mode):
+    if mode not in {'automatic', 'manual'}:
+        return False
     connection = None
     cursor = None
-    connection = _get_db_connection()
-    cursor = connection.cursor(dictionary=True)
-    userid=userid
     try:
-        cursor.execute(
-                    """
-                    UPDATE users 
-                    SET mode = %s
-                    WHERE userid = %s
-                    """,
-                    (mode,userid)
-                )
-        
+        connection = _get_db_connection()
+        cursor = connection.cursor()
+        cursor.execute('SELECT mode FROM users WHERE userid=%s FOR UPDATE', (userid,))
+        current = cursor.fetchone()
+        if current is None:
+            return False
+        if current[0] != mode:
+            cursor.execute('UPDATE users SET mode=%s WHERE userid=%s', (mode, userid))
+            cursor.execute('UPDATE user_location SET rain_settings_version=rain_settings_version+1, rain_episode_reason=NULL, rain_alert_reason=NULL WHERE userid=%s', (userid,))
         connection.commit()
-        return True 
-        
-    except Error as e:
-        print(f"Failed to add user {userid}: {e}")
-
-        if connection and connection.is_connected():
+        return True
+    except Error as exc:
+        if connection:
             connection.rollback()
-
+        print(f"Failed to save mode for {userid}: {exc}")
         return False
-    
     finally:
-            if cursor:
-                cursor.close()
-    
-            if connection and connection.is_connected():
-                connection.close()
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
+
+
+def get_user_mode(userid):
+    connection = _get_db_connection()
+    try:
+        cursor = connection.cursor()
+        try:
+            cursor.execute('SELECT mode FROM users WHERE userid=%s', (userid,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        finally:
+            cursor.close()
+    finally:
+        connection.close()
+
 
 def get_autoupdate_users()-> list:
     connection = None

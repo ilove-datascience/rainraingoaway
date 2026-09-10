@@ -64,7 +64,7 @@ def main():
         print(f"[{i}/{len(to_fix)}] {csv_path.name}")
         try:
             if backfill_file(csv_path):
-                fixed += 1
+                fixed += 1  
         except Exception as exc:
             failed += 1
             print(f"  FAILED: {exc}")

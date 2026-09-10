@@ -1,6 +1,8 @@
 import queue
 import sys
+import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -54,7 +56,7 @@ def fallback_sleep_seconds(offset_hours: int = SG_OFFSET_HOURS) -> float:
     return 15.0
 
 
-def scrape_once(img_names: tuple[str, ...] = ("70km", "240km")) -> bool:
+def scrape_once(img_names: tuple[str, ...] = ("70km", "240km"), file_ready_queue=None) -> bool:
     """Fetch one pass of radar images.
 
     Returns True if any image had to fall back to an earlier tick.
@@ -64,9 +66,12 @@ def scrape_once(img_names: tuple[str, ...] = ("70km", "240km")) -> bool:
         try:
             dt, _, fell_back = fetch_radar_snapshot(img_name)
             print(f"Captured {img_name} {dt}")
+            if img_name == "70km" and file_ready_queue is not None:
+                file_ready_queue.put(dt)
             fell_back_any = fell_back_any or fell_back
         except Exception as exc:
             print(f"Failed to capture {img_name}: {exc}")
+            fell_back_any = True
     return fell_back_any
 
 
@@ -93,74 +98,21 @@ def run_scraper_forever(
     img_names: tuple[str, ...] = ("70km",),
     interval_seconds: int = FETCH_INTERVAL_SECONDS,
     model_ready_queue: queue.Queue | None = None,
+    file_ready_queue: queue.Queue | None = None,
 ) -> None:
 
-    from data_processing.data_loading import build_and_cache_frame
-
-    pending_cache: set[int] = set()
-    MAX_PENDING_AGE_MINUTES = 20
+    if file_ready_queue is None:
+        from scraping.frame_cache import run_frame_cache_worker
+        file_ready_queue = queue.Queue()
+        threading.Thread(
+            target=run_frame_cache_worker,
+            args=(file_ready_queue, model_ready_queue),
+            daemon=True,
+            name="frame-cache",
+        ).start()
 
     while True:
-
-        fell_back_any = scrape_once(img_names)
-
-        if "70km" in img_names:
-
-            dt_now = datetime_now_str(offset_hours=SG_OFFSET_HOURS)
-            dt_now = datetime.strptime(str(dt_now), "%Y%m%d%H%M")
-
-            current_tick = int(
-                floor_to_5min(dt_now).strftime("%Y%m%d%H%M")
-            )
-
-            pending_cache.add(current_tick)
-
-            still_pending = set()
-
-            for tick in sorted(pending_cache):
-
-                tick_dt = datetime.strptime(str(tick), "%Y%m%d%H%M")
-                age_minutes = (dt_now - tick_dt).total_seconds() / 60
-
-                if age_minutes > MAX_PENDING_AGE_MINUTES:
-                    print(
-                        f"Dropping stale cache tick {tick} "
-                        f"(unresolved after {age_minutes:.0f} min)"
-                    )
-                    continue
-
-                try:
-
-                    result = build_and_cache_frame(
-                        tick,
-                        img_name="70km",
-                        verbose=False
-                    )
-
-                    if result is None:
-                        still_pending.add(tick)
-
-                    else:
-
-                        print(f"Multimodal frame ready for {tick}")
-
-                        if model_ready_queue is not None:
-                            model_ready_queue.put(tick)
-
-                except Exception as exc:
-
-                    print(f"Cache attempt failed for {tick}: {exc}")
-                    still_pending.add(tick)
-
-            pending_cache = set(
-                sorted(still_pending)[-12:]
-            )
-
-            if pending_cache:
-                print(
-                    f"Pending multimodal cache ticks: "
-                    f"{sorted(pending_cache)}"
-                )
+        fell_back_any = scrape_once(img_names, file_ready_queue=file_ready_queue)
 
         if fell_back_any:
 
@@ -252,6 +204,9 @@ def fetch_radar_snapshot(img_name: str, dt: int | None = None) -> tuple[int, Pat
     for attempt in range(max_retries + 1):
         attempt_dt = dt_dt - timedelta(minutes=5 * attempt)
         attempt_str = int(attempt_dt.strftime("%Y%m%d%H%M"))
+        cached_path = DATA_DIR / img_name / "png" / f"{attempt_str}.png"
+        if cached_path.is_file() and cached_path.stat().st_size > 0:
+            return attempt_str, cached_path, attempt > 0
         url = f"{base_url}dpsri_{img_name}_{attempt_str}0000dBR.dpsri.png"
 
         for request_attempt in range(request_retries + 1):
@@ -300,7 +255,12 @@ def fetch_radar_snapshot(img_name: str, dt: int | None = None) -> tuple[int, Pat
     output_png_dir.mkdir(parents=True, exist_ok=True)
 
     png_path = output_png_dir / f"{dt}.png"
-    png_path.write_bytes(response.content)
+    temporary_path = png_path.with_name(f".{png_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary_path.write_bytes(response.content)
+        temporary_path.replace(png_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
     print(f"Saved {png_path}")
 

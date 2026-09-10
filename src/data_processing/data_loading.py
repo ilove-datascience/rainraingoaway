@@ -104,84 +104,43 @@ def create_samples(data, list_length=10, min_list_length = 7, num_target_steps=1
     is unaffected by this — only the target grows. With num_target_steps=1
     this reproduces the original single-step behaviour exactly.
     """
-    count = 1 
-    data_grouped = list()
-    sample_list= list()
-    
-    # Same shelving threshold as before when num_target_steps=1; grows by
-    # (num_target_steps - 1) so every extra target step adds one more frame
-    # to the group without shrinking the input length.
-    group_size = list_length + num_target_steps - 1
-    
-    ttl_cnt = 0 
+    if list_length < 1 or num_target_steps < 1:
+        raise ValueError("list_length and num_target_steps must be positive")
+
+    group_size = list_length + num_target_steps
     keys = sorted(data.keys())
-    prev_key = keys[0]
+    if not keys:
+        return [], []
 
-    for key in keys[1:]:
-        value = data[key]
-        value = torch.from_numpy(np.asarray(value)).float()
-        ttl_cnt+=1
-        key_time = datetime.strptime(str(key).strip(".png"),"%Y%m%d%H%M")
-        prev_key_time = datetime.strptime(str(prev_key).strip(".png"),"%Y%m%d%H%M")
-        change = key_time - prev_key_time
-        change = int(change.seconds/60)
-        #print(f"doing key {key}, with change {change}, cureent length is {len(sample_list)}, with count {count}")
-        
-    
-        if change > 5: # if non continous jump, end sample
-            #data_grouped.append(sample_list)
-            print(f"sample with lenth {len(sample_list)} created due to discontinuation in series, with change {change}")
-            sample_list = list()
-            sample_list.append(value)
-            
-            count=1
-            
-        elif change == 5 and count <group_size: # add value to sample if we arent at the limit
-            sample_list.append(value)
-            
-            #print("appended")
-            count += 1 
-            
-        elif change == 5 and count >= group_size: # shelve sample and start a new sample
-            data_grouped.append(sample_list)
-           # print(f"sample with lenth {len(sample_list)} created")
-            sample_list = list()
-            sample_list.append(value)
-            
-            count=1
-        else:
-            print("FUCCCKKK YOU FOING HERE" ) # should never reach this
-        
-        prev_key = key # pass on key information 
-        
-    #removing samples too short
-    filtered=list()
-    for idx, item in enumerate(data_grouped):
-        length = len(item)
+    runs: list[list[torch.Tensor]] = []
+    current_run: list[torch.Tensor] = []
+    previous_time = None
 
-        if length < min_list_length:
-           pass
-        else:
-            filtered.append(item)
-    #print(f"removed {len(data_grouped)- len(filtered)} items for length")
-    data_grouped = filtered
-    x=list()
-    y=list()
+    for key in keys:
+        key_time = datetime.strptime(str(key).removesuffix(".png"), "%Y%m%d%H%M")
+        if previous_time is not None and key_time - previous_time != timedelta(minutes=5):
+            if current_run:
+                runs.append(current_run)
+            current_run = []
 
-    for i in data_grouped:
-        length= len(i)
+        current_run.append(torch.from_numpy(np.asarray(data[key])).float())
+        previous_time = key_time
 
-        if num_target_steps == 1:
-            last = i.pop(length-1)
-            x.append(i)
-            y.append(last)
-        else:
-            targets = i[-num_target_steps:]
-            inputs = i[:-num_target_steps]
-            x.append(inputs)
-            y.append(targets)
-        
-    return x,y
+    if current_run:
+        runs.append(current_run)
+
+    inputs = []
+    targets = []
+    for run in runs:
+        for start in range(0, len(run) - group_size + 1, group_size):
+            group = run[start:start + group_size]
+            inputs.append(group[:list_length])
+            if num_target_steps == 1:
+                targets.append(group[-1])
+            else:
+                targets.append(group[-num_target_steps:])
+
+    return inputs, targets
             
   
 def _get_cache_paths(cache_dir, radar_name):

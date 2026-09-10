@@ -2,6 +2,7 @@ import asyncio
 import os
 import queue
 import sys
+import threading
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -26,6 +27,21 @@ from masking import lat_long_to_pixel
 from scraping.rain_areas import SG_OFFSET_HOURS, attempt_get_most_recent, datetime_now_str, get_previous_ticks
 from telegram_code.database import add_location, add_user, get_autoupdate_users, get_location, save_mode_choice
 from telegram_code.states import WAITING_FOR_LOCATION, WAITING_FOR_MODE
+from telegram_code.forecast_policy import is_fresh, forecast_text, sg_now
+from telegram_code.rain_state import next_rain_state, should_notify
+from telegram_code.rain_state_db import get_rain_locations, save_rain_state
+from telegram_code.notification_delivery import deliver_notifications, settings_lock
+from telegram_code.notification_text import alert_text
+from telegram_code.local_rain import local_rain, in_coverage
+from telegram_code.rain_state import ENDED
+from telegram_code.database import get_user_mode
+
+
+def main_menu():
+    return ReplyKeyboardMarkup(
+        [["My forecast", "Current radar"], ["Change location", "Alert settings"]],
+        resize_keyboard=True,
+    )
 # Gated rain-prediction pipeline constants (mirror test_multimodal_convlstm.ipynb).
 # threshold=0.55 chosen as the best structural operating point from the validation-only
 # mask sweep: cleanest background/noise rejection with best large-component IoU among
@@ -87,7 +103,7 @@ def _find_usable_env_path(tick, height, width, tolerance_minutes=ENV_TICK_TOLERA
 
 	A CSV can exist but be unusable (e.g. the temperature API lagged and the
 	scraper wrote a file with no temperature column), so file existence alone
-	isn't enough — build the env stack and search outward in 5-minute steps
+	isn't enough â€” build the env stack and search outward in 5-minute steps
 	until one succeeds.
 	"""
 	tick_dt = datetime.strptime(str(tick), "%Y%m%d%H%M")
@@ -178,16 +194,20 @@ def load_token(env_key: str = "tele_api_key") -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-	user = update.effective_user.id
- 
-	success = add_user(user)	
-	#success = True 
-	print(success)
-	if success:
-		await update.message.reply_text("Please send current location")
-		print("returned waiting status")
-		return WAITING_FOR_LOCATION
-	
+    userid = update.effective_user.id
+    location = await asyncio.to_thread(get_location, userid)
+    if location:
+        await update.message.reply_text("Welcome back. Choose a forecast or update your settings.", reply_markup=main_menu())
+        return ConversationHandler.END
+    await asyncio.to_thread(add_user, userid)
+    await update.message.reply_text("Welcome! Send your Telegram location to set up local rain forecasts.")
+    return WAITING_FOR_LOCATION
+
+
+async def change_location(update, context):
+    await update.message.reply_text("Send your new Telegram location. This will be used for automatic alerts.")
+    return WAITING_FOR_LOCATION
+
 
 async def receive_location(
     update: Update,
@@ -201,7 +221,15 @@ async def receive_location(
 
     print(userid, latitude, longitude)
     
-    success = add_location(userid, lat= latitude, long= longitude)
+    if not in_coverage(latitude, longitude):
+        await update.message.reply_text("That location is outside our radar coverage. Please send a location within Singapore's radar map.")
+        return WAITING_FOR_LOCATION
+    async with settings_lock(context):
+        success = await asyncio.to_thread(add_location, userid, lat=latitude, long=longitude)
+    if not success:
+        await update.message.reply_text("Couldn't save your location. Please send it again.")
+        return WAITING_FOR_LOCATION
+    context.application.bot_data.setdefault("alert_history", {}).pop(userid, None)
     print("rcv lcoation called ")
     await update.message.reply_text("Location updated/saved")
     
@@ -221,6 +249,11 @@ async def receive_location(
 
 async def update_mode(update, context):
     userid = update.effective_user.id
+    current_mode = await asyncio.to_thread(get_user_mode, userid)
+    if current_mode is None:
+        await update.message.reply_text("Use /start to set up your location first.")
+        return ConversationHandler.END
+    await update.message.reply_text(f"Current alert setting: {current_mode}.")
     await update.message.reply_text(
 		"Select mode:",
 		reply_markup=ReplyKeyboardMarkup(
@@ -251,25 +284,53 @@ async def receive_mode(update, context):
         return WAITING_FOR_MODE
 
     print(userid, mode)
-    success = save_mode_choice(userid, mode)
+    async with settings_lock(context):
+        success = await asyncio.to_thread(save_mode_choice, userid, mode)
     if success:
         print('mode updated')
-        await update.message.reply_text("mode updated", reply_markup=ReplyKeyboardRemove())
+        context.application.bot_data.setdefault("alert_history", {}).pop(userid, None)
+        message = ("Automatic alerts enabled: one when rain is predicted, then only when "
+                   "rain is predicted to end or radar shows it has ended." if mode == "automatic"
+                   else "Automatic alerts paused. Tap My forecast whenever you need an update.")
+        await update.message.reply_text(message, reply_markup=main_menu())
+    else:
+        await update.message.reply_text("Couldn't save your settings. Please try again.")
+        return WAITING_FOR_MODE
     
 
     return ConversationHandler.END
 
 
-async def handle_msg(update: Update , context: ContextTypes.DEFAULT_TYPE):
-	user_id = update.effective_user.id
-	user_name= update.effective_user.name
-	text = update.message.text
-	print(f"{user_id}-{user_name}, {text}")
-	#await update.effective_sender.send_message("hfhfifhehfew")
-	await update.message.reply_text("Fuck you mans calling..... i got bad news...")
+async def handle_msg(update, context, model, folder_path, norm_stats=None):
+    if update.message.text == "Current radar":
+        await handle_actual(update, context, folder_path)
+        return
+    if update.message.text != "My forecast":
+        await update.message.reply_text("Choose an option below, or share a location for a forecast.", reply_markup=main_menu())
+        return
+    location = await asyncio.to_thread(get_location, update.effective_user.id)
+    if not location:
+        await update.message.reply_text("Use /start to save your location first.", reply_markup=main_menu())
+        return
+    if not in_coverage(float(location[0]), float(location[1])):
+        await update.message.reply_text("Your saved location is outside radar coverage. Tap Change location.", reply_markup=main_menu())
+        return
+    prediction = context.application.bot_data.get("latest_prediction")
+    if not is_fresh(prediction):
+        await update.message.reply_text("Checking for a current forecast…")
+        prediction = await run_model(model, folder_path, norm_stats)
+    if not is_fresh(prediction):
+        await update.message.reply_text("A current forecast isn't available yet. Please try again shortly.", reply_markup=main_menu())
+        return
+    context.application.bot_data["latest_prediction"] = prediction
+    image, caption = await asyncio.to_thread(build_location_forecast, float(location[0]), float(location[1]), prediction)
+    if not is_fresh(prediction):
+        await update.message.reply_text("That forecast just expired. Please tap My forecast again.", reply_markup=main_menu())
+        return
+    await update.message.reply_photo(photo=image, caption=caption, reply_markup=main_menu())
 
 
-async def run_model(model, folder_path, norm_stats=None):
+async def run_model(model, folder_path, norm_stats=None, tick=None):
     """
     Run the rainfall model using the latest available radar/environment data.
 
@@ -278,21 +339,12 @@ async def run_model(model, folder_path, norm_stats=None):
     """
 
     try:
-        # Get latest radar
-        success_most_recent = await asyncio.to_thread(
-            attempt_get_most_recent
-        )
-
-        # Work out required timestamps
-        dt_now = datetime_now_str(
-            offset_hours=SG_OFFSET_HOURS
-        )
-
-        prev_ticks = get_previous_ticks(
-            dt_now,
-            count=SEQUENCE_LENGTH,
-            most_recent_success=success_most_recent
-        )
+        if tick is None:
+            latest = await asyncio.to_thread(get_latest_radar_png, folder_path)
+            if latest is None:
+                return None
+            tick = int(latest.stem)
+        prev_ticks = get_previous_ticks(int(tick), count=SEQUENCE_LENGTH, most_recent_success=True)
 
         most_recent_tick = datetime.strptime(
             str(prev_ticks[0]),
@@ -355,6 +407,8 @@ async def run_model(model, folder_path, norm_stats=None):
         return {
             "prediction": pred_plot,
             "next_tick": next_tick,
+            "observed_at": most_recent_tick,
+            "actual_radar": np.flipud(x[0, -1, CH_RADAR].detach().cpu().numpy()),
 
             # Keep these if you want diagnostics later
             "raw_prediction": raw_np,
@@ -386,21 +440,25 @@ async def handle_location(
 
     latitude = location.latitude
     longitude = location.longitude
+    if not in_coverage(latitude, longitude):
+        await update.message.reply_text("That location is outside our radar coverage.", reply_markup=main_menu())
+        return
 
     latest_prediction = context.application.bot_data.get(
         "latest_prediction"
     )
 
-    if latest_prediction is None:
+    if not is_fresh(latest_prediction):
         latest_prediction = await run_model(
             model,
             folder_path,
             norm_stats
         )
 
-    if latest_prediction is None:
+    if not is_fresh(latest_prediction):
         await update.message.reply_text(
-            "Prediction isn't available yet."
+            "A current forecast isn't available yet. The latest forecast has expired or inputs are missing. Please try again shortly.",
+            reply_markup=main_menu(),
         )
         return
 
@@ -413,7 +471,8 @@ async def handle_location(
 
     await update.message.reply_photo(
         photo=plot_buffer,
-        caption=caption
+        caption=caption,
+        reply_markup=main_menu(),
     )
 
 
@@ -423,7 +482,16 @@ def get_latest_radar_png(folder_path) -> Path | None:
     return pngs[-1] if pngs else None
 
 
+_plot_lock = threading.Lock()
+
+
 def render_heatmap(grid, title, colorbar_label, marker=None):
+    # Matplotlib's pyplot state is shared by manual requests and queued alerts.
+    with _plot_lock:
+        return _render_heatmap(grid, title, colorbar_label, marker)
+
+
+def _render_heatmap(grid, title, colorbar_label, marker=None):
     """Render `grid` (values in [0, 1]) over the Singapore base map.
 
     Shared plot style for both model predictions and raw radar snapshots.
@@ -494,21 +562,33 @@ def render_heatmap(grid, title, colorbar_label, marker=None):
     return plot_buffer
 
 
-def build_radar_snapshot_plot(png_path):
+def build_radar_snapshot_plot(png_path, location=None):
     """Render the raw radar PNG at `png_path` using the same style as predictions."""
     intensity_points = png_to_xy_intensity(str(png_path), include_zero=True)
     intensity_grid = points_to_intensity_grid(intensity_points)
     radar_grid = remove_small_echoes(np.asarray(intensity_grid, dtype=np.float32) / 100.0)
     radar_plot = np.flipud(radar_grid)
+    marker = None
+    if location and in_coverage(*map(float, location)):
+        latitude, longitude = map(float, location)
+        value, marker, radius = local_rain(radar_plot, latitude, longitude)
 
     tick = png_path.stem
     plot_buffer = render_heatmap(
         radar_plot,
         title=f"Raw Radar - {tick}",
         colorbar_label="Radar intensity",
+        marker=marker,
     )
 
-    return plot_buffer, f"Latest raw radar snapshot: {tick}"
+    observed = datetime.strptime(tick, '%Y%m%d%H%M')
+    caption = f"Actual radar\nObserved: {observed:%d %b, %H:%M} SGT"
+    if marker is not None:
+        status = 'Rain detected nearby.' if value > 0.01 else 'No rain detected nearby.'
+        caption += f"\n{status}\nNear your saved location (~{radius} m), marked in pink."
+    else:
+        caption += "\nUse /start to save your location and show it on the map."
+    return plot_buffer, caption
 
 
 async def handle_actual(
@@ -522,33 +602,17 @@ async def handle_actual(
         await update.message.reply_text("No radar images available yet.")
         return
 
-    plot_buffer, caption = await asyncio.to_thread(build_radar_snapshot_plot, latest_png)
+    location = await asyncio.to_thread(get_location, update.effective_user.id)
+    plot_buffer, caption = await asyncio.to_thread(build_radar_snapshot_plot, latest_png, location)
 
-    await update.message.reply_photo(photo=plot_buffer, caption=caption)
+    await update.message.reply_photo(photo=plot_buffer, caption=caption, reply_markup=main_menu())
 
 
 def build_location_forecast(latitude, longitude, latest_prediction):
     pred_plot = latest_prediction["prediction"]
     next_tick = latest_prediction["next_tick"]
 
-    # Convert user lat/long to pixel
-    pixel_x, pixel_y = lat_long_to_pixel(
-        lat=latitude,
-        long=longitude,
-        width=pred_plot.shape[1],
-        height=pred_plot.shape[0]
-    )
-
-    pixel_y = pred_plot.shape[0] - 1 - pixel_y
-
-    print(f"x pixel: {pixel_x}")
-    print(f"y pixel: {pixel_y}")
-
-    # Prediction value at user's location
-    rain_value_at_location = pred_plot[
-        pixel_y,
-        pixel_x
-    ]
+    rain_value_at_location, (pixel_x, pixel_y), radius = local_rain(pred_plot, latitude, longitude)
 
     plot_buffer = render_heatmap(
         pred_plot,
@@ -565,11 +629,7 @@ def build_location_forecast(latitude, longitude, latest_prediction):
         f"{rain_value_at_location:.3g}"
     )
 
-    caption = (
-        "Rain prediction heatmap, "
-        "predicted rain value at location: "
-        f"{rain_value_at_location_str}"
-    )
+    caption = forecast_text(float(rain_value_at_location), latest_prediction) + f"\nNear your saved location (~{radius} m)."
 
     return plot_buffer, caption
 
@@ -596,7 +656,7 @@ async def process_new_timestamp(
     result = await run_model(
         model,
         folder_path,
-        norm_stats
+        norm_stats, tick=timestamp
     )
 
     if result is None:
@@ -623,106 +683,62 @@ async def process_new_timestamp(
     return True
 
 
-async def check_model_queue(
-    context,
-    model,
-    folder_path,
-    norm_stats,
-    model_ready_queue
-):
-    try:
-        tick = model_ready_queue.get_nowait()
-    except queue.Empty:
-        return
-
-    print(f"New cached timestamp ready: {tick}")
-
-    result = await run_model(
-        model,
-        folder_path,
-        norm_stats
-    )
-
-    if result is None:
-        print(f"Model run failed for {tick}")
-        return
-
-    context.application.bot_data[
-        "latest_prediction"
-    ] = result
-
-    print(
-        f"Prediction ready for {result['next_tick']}"
-    )
-
-    await send_auto_update(
-        context,
-        result
-    )
-async def send_auto_update(context, latest_prediction) -> bool:
-    auto_users = await asyncio.to_thread(get_autoupdate_users)
-
-    pred_plot = latest_prediction["prediction"]
-
-    for userid in auto_users:
+async def check_model_queue(context, model, folder_path, norm_stats, model_ready_queue):
+    pending = context.application.bot_data.setdefault("pending_model_ticks", set())
+    while True:
         try:
-            location = await asyncio.to_thread(
-                get_location,
-                userid
-            )
+            pending.add(int(model_ready_queue.get_nowait()))
+        except queue.Empty:
+            break
+    for tick in sorted(pending.copy()):
+        result = await run_model(model, folder_path, norm_stats, tick=tick)
+        if result is None:
+            print(f"Model run failed for {tick}; retained for retry")
+            continue
+        await send_auto_update(context, result)
+        pending.discard(tick)
+        current = context.application.bot_data.get("latest_prediction")
+        if current is None or result["observed_at"] > current["observed_at"]:
+            context.application.bot_data["latest_prediction"] = result
+    # Retry durable notifications even when there are no newly arrived radar frames.
+    await deliver_notifications(context, reply_markup=main_menu())
 
-            if location is None:
+
+async def send_auto_update(context, latest_prediction):
+    actual = latest_prediction.get("actual_radar")
+    if actual is None:
+        return False
+    rows = await asyncio.to_thread(get_rain_locations)
+    grid = latest_prediction["prediction"]
+    failed = False
+    for row in rows:
+        try:
+            latitude, longitude = float(row["latitude"]), float(row["longitude"])
+            if not in_coverage(latitude, longitude):
                 continue
-
-            lat, long = location
-
-            lat = float(lat)
-            long = float(long)
-
-            # Convert location to prediction pixel
-            pixel_x, pixel_y = lat_long_to_pixel(
-                lat=lat,
-                long=long,
-                width=pred_plot.shape[1],
-                height=pred_plot.shape[0]
-            )
-
-            pixel_y = pred_plot.shape[0] - 1 - pixel_y
-
-            # Get predicted rain at user's location
-            rain_value = pred_plot[pixel_y, pixel_x]
-
-            print(
-                f"User {userid}: "
-                f"rain value = {rain_value:.3g}"
-            )
-
-            # No meaningful rain -> don't message user
-            if rain_value < 0.003:
-                #continue
-                pass
-
-            print(f"Rain detected for {userid}, sending update")
-
-            # Build image only if we're actually sending it
-            plot_buffer, caption = await asyncio.to_thread(
-                build_location_forecast,
-                lat,
-                long,
-                latest_prediction
-            )
-
-            await context.bot.send_photo(
-                chat_id=userid,
-                photo=plot_buffer,
-                caption=caption
-            )
-
-        except Exception as e:
-            # Don't let one user failure stop updates for everyone
-            print(
-                f"Failed to send auto update "
-                f"to {userid}: {e}"
-            )
-
+            forecast, marker, radius = local_rain(grid, latitude, longitude)
+            observed, _, _ = local_rain(actual, latitude, longitude)
+            result = next_rain_state(row, forecast, observed, latest_prediction["observed_at"], latest_prediction["next_tick"])
+            if result is None:
+                continue
+            message = None
+            photo = None
+            if row['mode'] == 'automatic' and should_notify(row, result) and (result["reason"] == ENDED or is_fresh(latest_prediction)):
+                is_actual = result['reason'] == ENDED
+                value = observed if is_actual else forecast
+                message = alert_text(result["reason"], result["rain_observed_at"], result["rain_forecast_at"], radius, value)
+                image_grid = actual if is_actual else grid
+                image_time = result['rain_observed_at'] if is_actual else result['rain_forecast_at']
+                source = 'Actual radar' if is_actual else 'Forecast radar (+5 min)'
+                image = await asyncio.to_thread(render_heatmap, image_grid,
+                                               f'{source} | {image_time:%d %b %H:%M} SGT',
+                                               'Relative radar intensity', marker=marker)
+                photo = image.getvalue()
+                image.close()
+            await asyncio.to_thread(save_rain_state, row, result, message, sg_now(), photo)
+        except Exception as exc:
+            failed = True
+            print(f"Rain-state update failed for {row['userid']}: {exc}")
+    if failed:
+        raise RuntimeError("Some location states failed; keeping timestamp for retry")
     return True

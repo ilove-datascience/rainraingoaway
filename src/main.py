@@ -8,6 +8,7 @@ import torch
 from data_processing.multimodal_radar_dataset import radar_dataset_multimodal
 from models.multi_modal_convlstm import ConvLSTM_MM
 from scraping.gov_api import main as run_weather_scraper_forever
+from scraping.frame_cache import run_frame_cache_worker
 from scraping.rain_areas import (
     SG_OFFSET_HOURS,
     check_history,
@@ -17,6 +18,7 @@ from scraping.rain_areas import (
     run_scraper_forever,
 )
 from telegram_code.telegram_bot import run_bot
+from telegram_code.rain_state_db import ensure_rain_state_schema
 
 SEED = 67
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -99,16 +101,24 @@ def ensure_normalization_stats():
 
 
 def main() -> None:
+    ensure_rain_state_schema()
     dt_start = datetime_now_str(
         offset_hours=SG_OFFSET_HOURS
     )
 
     model_ready_queue = queue.Queue()
+    file_ready_queue = queue.Queue()
+    threading.Thread(
+        target=run_frame_cache_worker,
+        args=(file_ready_queue, model_ready_queue),
+        daemon=True,
+        name="frame-cache",
+    ).start()
 
     scraper_thread = threading.Thread(
         target=run_scraper_forever,
         kwargs={
-            "model_ready_queue": model_ready_queue
+            "file_ready_queue": file_ready_queue
         },
         daemon=True,
         name="radar-scraper"
@@ -122,6 +132,7 @@ def main() -> None:
 
     weather_thread = threading.Thread(
         target=run_weather_scraper_forever,
+        kwargs={"file_ready_queue": file_ready_queue},
         daemon=True,
         name="weather-scraper"
     )

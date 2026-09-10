@@ -1,5 +1,6 @@
 import os
 import time
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Union
@@ -183,17 +184,26 @@ def save_to_csv(data_df: pd.DataFrame, timestamp: Optional[str] = None) -> Path:
 
     output_path = OUTPUT_DIR / f"weather_{timestamp}.csv"
     print(f"saved at {output_path}")
-    data_df.to_csv(output_path, index=False)
+    temporary_path = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        data_df.to_csv(temporary_path, index=False)
+        temporary_path.replace(output_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
     return output_path
 
 
-def main() -> None:
+def main(file_ready_queue=None) -> None:
     while True:
         # Ensure we run on an exact 5-minute boundary (or immediately if already aligned).
         sleep_until_next_five_minute_boundary()
+        now = datetime.now(SINGAPORE_TZ)
+        tick = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
         try:
             data_df = fetch_once()
-            output_path = save_to_csv(data_df)
+            output_path = save_to_csv(data_df, timestamp=tick.strftime("%Y%m%d%H%M"))
+            if file_ready_queue is not None:
+                file_ready_queue.put(int(tick.strftime("%Y%m%d%H%M")))
             print(f"saved {len(data_df)} rows to {output_path}")
             
         except Exception as exc:
