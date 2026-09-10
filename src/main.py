@@ -18,7 +18,6 @@ from scraping.rain_areas import (
     run_scraper_forever,
 )
 from telegram_code.telegram_bot import run_bot
-from telegram_code.rain_state_db import ensure_rain_state_schema
 
 SEED = 67
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -101,7 +100,6 @@ def ensure_normalization_stats():
 
 
 def main() -> None:
-    ensure_rain_state_schema()
     dt_start = datetime_now_str(
         offset_hours=SG_OFFSET_HOURS
     )
