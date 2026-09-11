@@ -2,6 +2,8 @@ import importlib.util
 from pathlib import Path
 from datetime import datetime, timedelta
 import unittest
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 spec = importlib.util.spec_from_file_location('policy', Path(__file__).resolve().parents[1] / 'src/telegram_code/forecast_policy.py')
 policy = importlib.util.module_from_spec(spec)

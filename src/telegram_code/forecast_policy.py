@@ -1,5 +1,6 @@
 """Forecast wording, freshness and automatic-alert decisions."""
 from datetime import datetime, timedelta, timezone
+from telegram_code.notification_text import rain_notice
 
 SG_TZ = timezone(timedelta(hours=8))
 RAIN_THRESHOLD = 0.003
@@ -17,9 +18,7 @@ def is_fresh(prediction, now=None):
     return observed <= now < prediction['next_tick']
 
 
-def forecast_text(value, prediction):
+def forecast_text(value, prediction, radius=None):
     observed = prediction.get('observed_at', prediction['next_tick'] - timedelta(minutes=5))
-    outlook = 'Rain is predicted nearby.' if value >= RAIN_THRESHOLD else 'No rain is predicted nearby.'
-    return (f"Forecast\n{outlook}\n\nFor: {prediction['next_tick']:%d %b, %H:%M} SGT\n"
-            f"Based on radar at {observed:%H:%M} SGT.")
-
+    title = 'RAIN EXPECTED' if value >= RAIN_THRESHOLD else 'NO RAIN EXPECTED'
+    return rain_notice(title, observed, prediction['next_tick'], radius, value)

@@ -31,7 +31,7 @@ from telegram_code.forecast_policy import is_fresh, forecast_text, sg_now
 from telegram_code.rain_state import next_rain_state, should_notify
 from telegram_code.rain_state_db import get_rain_locations, save_rain_state
 from telegram_code.notification_delivery import deliver_notifications, settings_lock
-from telegram_code.notification_text import alert_text
+from telegram_code.notification_text import alert_text, rain_notice
 from telegram_code.local_rain import local_rain, in_coverage
 from telegram_code.rain_state import ENDED
 from telegram_code.database import get_user_mode
@@ -320,12 +320,13 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
         await update.message.reply_text("Checking for a current forecast…")
         prediction = await run_model(model, folder_path, norm_stats)
     if not is_fresh(prediction):
-        await update.message.reply_text("A current forecast isn't available yet. Please try again shortly.", reply_markup=main_menu())
+        await send_actual_fallback(update, folder_path, location)
         return
     context.application.bot_data["latest_prediction"] = prediction
     image, caption = await asyncio.to_thread(build_location_forecast, float(location[0]), float(location[1]), prediction)
     if not is_fresh(prediction):
-        await update.message.reply_text("That forecast just expired. Please tap My forecast again.", reply_markup=main_menu())
+        image.close()
+        await send_actual_fallback(update, folder_path, location)
         return
     await update.message.reply_photo(photo=image, caption=caption, reply_markup=main_menu())
 
@@ -456,10 +457,7 @@ async def handle_location(
         )
 
     if not is_fresh(latest_prediction):
-        await update.message.reply_text(
-            "A current forecast isn't available yet. The latest forecast has expired or inputs are missing. Please try again shortly.",
-            reply_markup=main_menu(),
-        )
+        await send_actual_fallback(update, folder_path, (latitude, longitude))
         return
 
     plot_buffer, caption = await asyncio.to_thread(
@@ -469,6 +467,10 @@ async def handle_location(
         latest_prediction
     )
 
+    if not is_fresh(latest_prediction):
+        plot_buffer.close()
+        await send_actual_fallback(update, folder_path, (latitude, longitude))
+        return
     await update.message.reply_photo(
         photo=plot_buffer,
         caption=caption,
@@ -582,13 +584,39 @@ def build_radar_snapshot_plot(png_path, location=None):
     )
 
     observed = datetime.strptime(tick, '%Y%m%d%H%M')
-    caption = f"Actual radar\nObserved: {observed:%d %b, %H:%M} SGT"
+    caption = rain_notice('RADAR SNAPSHOT', observed)
     if marker is not None:
-        status = 'Rain detected nearby.' if value > 0.01 else 'No rain detected nearby.'
-        caption += f"\n{status}\nNear your saved location (~{radius} m), marked in pink."
+        title = 'RAIN DETECTED' if value > 0.01 else 'NO RAIN DETECTED'
+        caption = rain_notice(title, observed, radius=radius, intensity=value)
+        caption += '\nPink marker: your saved location'
     else:
         caption += "\nUse /start to save your location and show it on the map."
     return plot_buffer, caption
+
+
+async def send_actual_fallback(update, folder_path, location):
+    """Respond with a dated observation when no future +5 forecast is usable."""
+    latest_png = await asyncio.to_thread(get_latest_radar_png, folder_path)
+    if latest_png is None:
+        await update.message.reply_text(
+            "FORECAST DELAYED\n\nNo radar image is available yet. Please try again shortly.",
+            reply_markup=main_menu(),
+        )
+        return
+    try:
+        image, caption = await asyncio.to_thread(build_radar_snapshot_plot, latest_png, location)
+    except (OSError, ValueError) as exc:
+        print(f"Radar fallback unavailable: {exc}")
+        await update.message.reply_text(
+            "FORECAST DELAYED\n\nThe latest radar image could not be loaded. Please try again shortly.",
+            reply_markup=main_menu(),
+        )
+        return
+    caption = "FORECAST DELAYED — SHOWING ACTUAL RADAR\n\n" + caption
+    try:
+        await update.message.reply_photo(photo=image, caption=caption, reply_markup=main_menu())
+    finally:
+        image.close()
 
 
 async def handle_actual(
@@ -629,7 +657,7 @@ def build_location_forecast(latitude, longitude, latest_prediction):
         f"{rain_value_at_location:.3g}"
     )
 
-    caption = forecast_text(float(rain_value_at_location), latest_prediction) + f"\nNear your saved location (~{radius} m)."
+    caption = forecast_text(float(rain_value_at_location), latest_prediction, radius)
 
     return plot_buffer, caption
 

@@ -35,11 +35,10 @@ class LocalRainTests(unittest.TestCase):
     def test_sources_are_clear_and_not_repetitive(self):
         now=datetime(2026,9,10,20,30)
         text=alert_text(ENDING,now,now+timedelta(minutes=5),300)
-        self.assertTrue(text.startswith('Forecast\n'))
-        self.assertEqual(text.count('predicted'),1)
+        self.assertTrue(text.startswith('RAIN EXPECTED TO CLEAR | FORECAST\n'))
         actual=alert_text(ENDED,now,now+timedelta(minutes=5),300)
-        self.assertTrue(actual.startswith('Actual radar\n'))
-        self.assertNotIn('Forecast',actual)
+        self.assertTrue(actual.startswith('RAIN CLEARED | ACTUAL RADAR\n'))
+        self.assertNotIn('Forecast for:',actual)
 
     def test_relative_intensity_bands(self):
         for value, label in [(0,'No rain'),(.003,'Light'),(.2,'Light'),(1/3,'Moderate'),(.5,'Moderate'),(2/3,'Heavy'),(1.2,'Heavy')]:
@@ -51,7 +50,7 @@ class LocalRainTests(unittest.TestCase):
     def test_caption_contains_relative_intensity(self):
         now=datetime(2026,9,10,20,30)
         text=alert_text(ENDING,now,now+timedelta(minutes=5),300,0)
-        self.assertIn('Estimated intensity: No rain (radar scale)',text)
+        self.assertIn('Expected intensity: No rain (radar scale)',text)
         self.assertLess(len(text),1024)
 
 

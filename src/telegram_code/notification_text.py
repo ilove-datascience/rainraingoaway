@@ -17,13 +17,23 @@ def intensity_label(value, actual=False):
     return 'Heavy'
 
 
+def rain_notice(title, observed, forecast=None, radius=None, intensity=None):
+    """Intent first, then intensity, timestamp and area in the same order."""
+    actual = forecast is None
+    source = 'ACTUAL RADAR' if actual else 'FORECAST'
+    lines = [f'{title} | {source}', '']
+    if intensity is not None:
+        kind = 'Observed' if actual else 'Expected'
+        lines.append(f'{kind} intensity: {intensity_label(intensity, actual=actual)} (radar scale)')
+    if not actual:
+        lines.append(f'Forecast for: {forecast:%d %b, %H:%M} SGT')
+    lines.append(f'Radar observed: {observed:%d %b, %H:%M} SGT')
+    if radius is not None:
+        lines.append(f'Area: ~{radius} m around your saved location')
+    return '\n'.join(lines)
+
+
 def alert_text(reason, observed, forecast, radius, intensity=None):
-    nearby = f'Near your saved location (~{radius} m).'
-    if reason == ENDED:
-        strength = f'\nObserved intensity: {intensity_label(intensity, actual=True)} (radar scale)' if intensity is not None else ''
-        return f'Actual radar\nRain has cleared nearby.{strength}\n\nObserved: {observed:%d %b, %H:%M} SGT\n{nearby}'
-    headlines = {START: 'Rain is predicted nearby.', ENDING: 'Rain is predicted to clear nearby.',
-                 CANCELLED: 'Rain is no longer predicted nearby.'}
-    strength = f'\nEstimated intensity: {intensity_label(intensity)} (radar scale)' if intensity is not None else ''
-    return (f'Forecast\n{headlines[reason]}{strength}\n\nFor: {forecast:%d %b, %H:%M} SGT\n'
-            f'Based on radar at {observed:%H:%M} SGT.\n{nearby}')
+    titles = {START: 'RAIN EXPECTED', ENDING: 'RAIN EXPECTED TO CLEAR',
+              ENDED: 'RAIN CLEARED', CANCELLED: 'RAIN NO LONGER EXPECTED'}
+    return rain_notice(titles[reason], observed, None if reason == ENDED else forecast, radius, intensity)
