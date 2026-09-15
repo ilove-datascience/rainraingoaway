@@ -1,0 +1,10 @@
+{
+  "checks": [
+    "by_day.csv: all counts and exposure reconcile",
+    "by_continuous_run.csv: all counts and exposure reconcile",
+    "warning_events.csv: all issued-warning outcomes reconcile",
+    "result lock identity verified"
+  ],
+  "warning_events": 128,
+  "unit_tests_passed": 8
+}
