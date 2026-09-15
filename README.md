@@ -1,102 +1,294 @@
-
 # RainRainGoAway
 
-Simple research codebase for radar-to-rain forecasting using a ConvLSTM model.
+Singapore radar forecasting and a Telegram rain-alert bot, with offline tools for
+training and evaluating local rain-arrival models.
 
-This repository contains data preprocessing utilities, training and evaluation code, and a notebook that demonstrates forecasting the next radar frame from the latest PNG sequence.
+The live bot uses a multimodal ConvLSTM forecast. The arrival-model framework and
+v5 experiment notebooks are separate research workflows; running the bot does not
+load an arrival model.
 
 ## Repository layout
 
-- `src/` — project source code (data loaders, models, training, utilities)
-	- `data_processing/pngtojson.py` — helpers to convert radar PNG to intensity grids
-	- `data_processing/data_loading.py` — radar + environment loading utilities
-	- `data_processing/multimodal_radar_dataset.py` — multimodal dataset wrapper used by training
-	- `models/convlstm.py` — ConvLSTM implementation used as the predictor
-	- `train_model.py` — script training entry point (multimodal)
-	- `visualise_model.ipynb` — notebook for loading recent images and forecasting the next frame
-	- `scraping/rain_areas.py` — radar scraper for 70km and 240km PNG captures
-- `data/` — example data folders (70km, 240km) and `environment/` CSVs
-- `models/` — saved model checkpoints (not committed)
-- `tests/` — test scripts
-- `pyproject.toml` — project metadata
+| Path | Purpose |
+| --- | --- |
+| `src/main.py` | Starts radar/weather scrapers, frame caching, and the Telegram bot |
+| `src/telegram_code/` | Commands, local forecasts, persistent rain state, notification delivery, cute mode, and Kuma heartbeats |
+| `src/scraping/` | Radar downloads, GovSG weather collection, and frame caching |
+| `src/data_processing/` | Radar decoding, multimodal inputs, normalization, checkpoint contracts, and training windows |
+| `src/models/multi_modal_convlstm.py` | Live multimodal ConvLSTM model |
+| `src/arrival/` | Rain-arrival datasets, models, training, calibration, and inference |
+| `src/evaluation/` | Offline forecast and notification diagnostics |
+| `scripts/` | Evaluation, replay, smoke checks, and notebook tooling |
+| `tests/` | Automated regression tests |
+| `models/` | Checkpoints and normalization; some existing files are tracked |
+| `data/` | Local radar/weather data, caches, and bot preferences; ignored by Git |
+| `reports/` | Generated evaluation outputs; ignored by Git |
 
-## Quick start
+## Install
 
-1. Create and activate a Python virtual environment
+Use Python **3.12 or newer**. Run these commands from the repository root.
+
+With `uv`:
+
+```powershell
+uv sync --group dev
+```
+
+Or create a virtual environment:
 
 ```powershell
 python -m venv .venv
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
-& ".\.venv\Scripts\Activate.ps1"
-pip install -e .
+& .\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+python -m pip install pytest-asyncio
 ```
 
-If you prefer `uv`, the repo also has a lockfile:
+The examples below use `uv run`. With an activated virtual environment, replace
+`uv run python` with `python`. Jupyter is optional and is not listed as a project
+dependency; install it separately if you want to use the notebooks.
+
+## Run the Telegram bot
+
+### 1. Configure the environment
+
+Create `.env` in the repository root:
+
+```dotenv
+tele_api_key=YOUR_TELEGRAM_BOT_TOKEN
+gov_api_key=YOUR_GOVSG_API_KEY
+MYSQLHOST=localhost
+MYSQLUSER=YOUR_DATABASE_USER
+MYSQL_ROOT_PASSWORD=YOUR_DATABASE_PASSWORD
+MYSQL_DATABASE=WeatherBot
+KUMA_PUSH_URL=
+```
+
+- `tele_api_key`: required Telegram bot token. The name is case-sensitive.
+- `gov_api_key`: required by the weather scraper; `GOV_API_KEY` is also accepted.
+- `MYSQLHOST`, `MYSQLUSER`, `MYSQL_ROOT_PASSWORD`, `MYSQL_DATABASE`: MySQL settings.
+  Despite its name, `MYSQL_ROOT_PASSWORD` supplies the password for `MYSQLUSER`.
+  Code defaults are `localhost`, `root`, an empty password, and `WeatherBot`.
+- `KUMA_PUSH_URL`: optional complete Uptime Kuma push URL; see monitoring below.
+
+Keep `.env` private. It is ignored by Git. Restart the bot after changing it.
+
+### 2. Prepare MySQL
+
+The bot requires an existing MySQL database with the base `users` and
+`user_location` tables. This repository does not include a complete fresh-database
+installer: restore your existing bot database/schema before running it on a new
+machine. Merely setting `MYSQL_DATABASE` does not create the database.
+
+After the base tables exist, run the additive rain-state migration:
 
 ```powershell
-uv sync
+$env:PYTHONPATH = (Resolve-Path .\src).Path
+uv run python -m telegram_code.rain_state_db
 ```
 
-2. Prepare data
+This adds missing rain-state columns and creates/updates `rain_notifications` for
+durable delivery. The database user needs the corresponding schema permissions.
+The migration is a separate command; normal bot startup does not invoke it.
 
-Place radar PNG sequences under `data/<resolution>/png/` with filenames formatted as `YYYYMMDDHHMM.png`.
+### 3. Check the model files
 
-For multimodal training (`python src/train_model.py`), place matching environment CSVs under `data/environment/` with filenames:
+`src/main.py` loads `models/model_best_latest.pkl` when present. Otherwise it
+selects the most recently modified `models/model_best_*.pkl` file directly inside
+`models/`. It does not search timestamp subdirectories.
 
-- `weather_YYYYMMDDHHMM.csv`
+Use normalization from the same model run in `models/normalization_stats.json`.
+If this file is absent, startup tries to calculate it from local training data;
+a fresh clone without that data cannot rely on this fallback. The loader checks
+checkpoint metadata when present; unversioned checkpoints use legacy decoding.
 
-Each CSV should include:
+The current entry point explicitly uses **CPU** inference. Its CUDA diagnostics
+do not mean it selected the GPU.
 
-- `longitude`, `latitude`
-- `humidity`, `temperature`, `wind_dir`, `wind_speed`
-
-Frames without a matching CSV or with incomplete environment columns are skipped during multimodal loading.
-
-3. Run the notebook
-
-Open and run `src/visualise_model.ipynb` with Jupyter / VS Code notebooks to load the latest 4 images, print their datetimes, and forecast the next frame.
+### 4. Start
 
 ```powershell
-jupyter lab src/visualise_model.ipynb
+uv run python src/main.py
 ```
 
-## Training
+Startup launches the radar scraper, weather scraper, and frame-cache worker,
+loads the model, checks recent radar history, and starts Telegram polling. The
+prediction queue is checked every 30 seconds; radar frames follow five-minute
+ticks. Allow time for usable radar and weather inputs to arrive.
 
-You can train with either the notebook or the script:
+In a private chat with the bot:
+
+- `/start`: register your location and choose an alert mode.
+- **My forecast**: request a forecast for your saved location.
+- **Current radar** or `/actual`: request the latest radar snapshot.
+- **Change location**: update your saved location.
+- **Alert settings** or `/setmode`: choose automatic or manual updates.
+
+Automatic mode sends an alert when rain is predicted, then updates when rain is
+predicted to end or radar shows it has ended. Manual mode pauses automatic alerts.
+Unavailable or stale forecasts can fall back to an actual radar snapshot.
+
+## Telegram cute mode
+
+Send `/cutemode` in a private chat to toggle cat-style messages. This typed command
+is not listed in the bot's buttons or command menu. Preferences are saved per chat
+in `data/bot_preferences.sqlite3` and survive restarts.
+
+Forecasts and rain alerts get a weather-specific line, for example:
+
+- Rain expected: “Rain might be padding over—keep your paws dry, meow! 🐾”
+- No rain expected: “No rain on my whiskers for now, meow! 🐾”
+- Rain cleared: “The rain has padded away, meow! 🐾”
+
+Menus and settings confirmations stay concise, without a repeated cat footer:
+
+```text
+Current alert setting: automatic.
+
+Select mode:
+```
+
+Cute mode does not change weather facts, alert timing, or keyboard options.
+
+## Uptime Kuma monitoring
+
+Create a **Push** monitor named **RainRaingoAway**, with a **360-second heartbeat
+interval** and **2–3 retries**. Forecast cycles follow five-minute radar ticks;
+a 60-second monitor interval would report false downtime between healthy cycles.
+
+Copy the complete push URL supplied by Kuma into `.env`, including any query
+parameters it provides:
+
+```dotenv
+KUMA_PUSH_URL=https://YOUR_KUMA_HOST/api/push/YOUR_SECRET_TOKEN
+```
+
+The bot must be able to reach this address. Restart after configuring it. Leaving
+it unset or empty disables heartbeats.
+
+A heartbeat is sent only after a fresh radar/environment prediction and successful
+database state processing, including when there are no registered locations.
+Failed inference, database errors, and stale backlog predictions do not send
+heartbeats. A heartbeat is not proof that every Telegram notification was delivered.
+
+Push requests run outside the Telegram event loop, have a five-second timeout,
+and do not stop the bot if Kuma is unreachable. The push URL is a secret; do not
+commit it.
+
+## Data and preprocessing
+
+Local inputs use these paths:
+
+```text
+data/70km/png/YYYYMMDDHHMM.png
+data/environment/weather_YYYYMMDDHHMM.csv
+```
+
+Weather inputs include longitude, latitude, humidity, temperature, wind direction,
+and wind speed. The live pipeline builds radar/environment frames and applies
+saved normalization. Offline loaders skip unusable inputs rather than treating
+them as valid training examples.
+
+`radar_codec.py` versions radar decoding. `model_contract.py` checks compatibility
+between checkpoint metadata, normalization, and preprocessing. The multimodal
+dataset also supports overlapping training windows with chronological frame
+partitions; input cleaning avoids mutating shared target frames.
+
+## ConvLSTM training and visualization
+
+The script entry point is:
 
 ```powershell
-python src/train_model.py
+uv run python src/train_model.py
 ```
 
-The script trains a multimodal ConvLSTM model and saves outputs under a run-specific timestamp folder:
+**This script writes production asset paths:** best weights go to
+`models/model_best_latest.pkl`, and normalization goes to
+`models/normalization_stats.json`. Keep a copy of deployed assets before training
+in the same checkout. Loss history is written to
+`models/<timestamp>/multimodal_convlstm_losses_<timestamp>.csv`.
 
-- `models/<timestamp>/model_<timestamp>.pkl` (best validation model)
-- `models/<timestamp>/multimodal_convlstm_losses_<timestamp>.csv` (epoch, train_loss, val_loss)
+Notebook entry points:
 
-Example:
+- `src/visualise_model.ipynb`: inspect radar sequences and forecasts.
+- `src/test_multimodal_convlstm_long.ipynb`: longer ConvLSTM training/evaluation workflow.
 
-- `models/20260707_153012/model_20260707_153012.pkl`
-- `models/20260707_153012/multimodal_convlstm_losses_20260707_153012.csv`
+Inspect paths, data availability, and execution settings before running notebook
+cells. Training and notebook execution are not required to start an already
+configured bot.
 
-If you run `src/main.py`, ensure it points to an existing checkpoint file from your `models/<timestamp>/` run folder.
+## Rain-arrival research workflows
 
-## Inference & Visualization
+| Entry point | Purpose |
+| --- | --- |
+| `src/rain_arrival_model.ipynb` | Arrival-model training and evaluation |
+| `src/rain_arrival_experiments.ipynb` | Architecture and experiment comparisons |
+| `src/rain_arrival_v5_full_data.ipynb` | Resumable full-archive v5 training |
+| `scripts/smoke_arrival_pipeline.py` | Small real-data integration check, including two training updates |
+| `scripts/replay_arrival_notifications.py` | Offline replay of calibrated arrival alerts |
+| `scripts/compare_arrival_alert_burden.py` | Compare alert burden across runs |
+| `scripts/locked_forward_evaluation.py` | Freeze and evaluate saved finalists |
 
-The notebook shows how to fetch the latest 4 PNGs from `data/70km/png`, run `model(inputs)`, and plot the 4 input frames plus the predicted next frame. It also prints the timestamps of the input images before inference.
+These workflows require local radar/weather archives. Replays additionally need
+saved run weights and calibration files, which are generally ignored by Git and
+are not supplied by a fresh clone. Full-archive training produces new weights;
+previous calibration and evaluation results do not automatically validate them.
 
-The current notebook cell does not compare against a known future target image because the next frame is unknown at prediction time.
+For a small integration check with the required archive available:
 
-## Scraping
+```powershell
+uv run python scripts/smoke_arrival_pipeline.py
+```
 
-`src/scraping/rain_areas.py` downloads the latest radar images for `70km` and `240km`. If a request times out, it now retries the same URL before falling back to an earlier 5-minute tick. This helps keep the scraper running through transient network issues.
+For replay options:
 
-## Tips
-- If you need binary prediction thresholds, apply `prob > 0.5` (or another threshold) after sigmoid.
-- Keep model checkpoints in `models/` and add that folder to `.gitignore` if not already excluded.
+```powershell
+uv run python scripts/replay_arrival_notifications.py --help
+```
+
+Replay accepts `--run`, `--calibration`, and `--output`. Inspect its configured data
+requirements before evaluating your own run.
+
+The locked-forward script has `freeze` and `evaluate` phases. Its finalist paths,
+date range, and report directory are fixed in the script for a specific historical
+comparison. Review those requirements before running either phase; it is not a
+generic fresh-clone evaluation command.
+
+Notebook generators and the historical `add_*`, `fix_*`, `update_*`, `prepare_*`,
+`expand_*`, `harden_*`, and `configure_*` helpers can rewrite notebooks. Some run
+at import time. They are development tools, not bot startup steps.
+
+## Tests
+
+```powershell
+uv run python -m pytest tests -q
+```
+
+Focused bot-style and heartbeat checks:
+
+```powershell
+uv run python -m pytest tests/test_cute_mode.py tests/test_heartbeat.py tests/test_model_queue.py -q
+```
+
+If Windows denies access to pytest's default temporary folder, choose a new,
+dedicated writable directory with `--basetemp`. Pytest clears that directory;
+do not point it at existing project data.
+
+## Updating an existing checkout
+
+To update the branch you are currently running:
+
+```powershell
+git pull --ff-only
+uv sync --group dev
+```
+
+Restart the bot to load code or environment changes. Preserve local edits before
+switching branches. `.env`, private data, caches, generated reports, and new model
+artifacts are ignored; already-tracked checkpoints remain tracked despite the
+`models/` ignore rule.
 
 ## Contributing
 
-Issues and PRs are welcome. For changes that affect data formats or training behaviour, include reproducible notebook cells or scripts.
-
-
-
+Keep changes and tests grouped by topic. Do not commit credentials, private chat
+data, or generated caches. Include data and model prerequisites with evaluation
+instructions, and distinguish integration checks from forecasting-quality results.

@@ -23,6 +23,7 @@ if __package__ in {None, ""}:
 
 from data_processing.data_loading import build_and_cache_frame, build_env_data, remove_small_echoes
 from data_processing.pngtojson import png_to_xy_intensity, points_to_intensity_grid
+from data_processing.radar_codec import decode_png, SOURCE, source_category
 from masking import lat_long_to_pixel
 from scraping.rain_areas import SG_OFFSET_HOURS, attempt_get_most_recent, datetime_now_str, get_previous_ticks
 from telegram_code.database import add_location, add_user, get_autoupdate_users, get_location, save_mode_choice
@@ -35,6 +36,7 @@ from telegram_code.notification_text import alert_text, rain_notice
 from telegram_code.local_rain import local_rain, in_coverage
 from telegram_code.rain_state import ENDED
 from telegram_code.database import get_user_mode
+from telegram_code.heartbeat import send_heartbeat
 
 
 def main_menu():
@@ -47,8 +49,7 @@ def main_menu():
 # mask sweep: cleanest background/noise rejection with best large-component IoU among
 # configs within ~0.001 CSI of the peak (see mask_extended_validation_report.csv).
 SEQUENCE_LENGTH = 3
-RAIN_PROBABILITY_THRESHOLD = 0.55
-MIN_COMPONENT_SIZE = 25
+from telegram_code.forecast_mask import clean_rain_mask, RAIN_PROBABILITY_THRESHOLD, MIN_COMPONENT_SIZE
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RADAR_FOLDER = PROJECT_ROOT / "data" / "70km" / "png"
@@ -64,14 +65,6 @@ ZSCORE_CHANNELS = [CH_TEMP, CH_HUM, CH_WIND_U, CH_WIND_V]
 
 ENV_TICK_TOLERANCE_MINUTES = 15
 
-def clean_rain_mask(probability: np.ndarray) -> np.ndarray:
-	"""Threshold the rain-probability map and drop small components."""
-	hard_mask = probability >= RAIN_PROBABILITY_THRESHOLD
-	labels, _ = ndimage.label(hard_mask, structure=np.ones((3, 3), dtype=np.uint8))
-	component_sizes = np.bincount(labels.ravel())
-	keep = component_sizes >= MIN_COMPONENT_SIZE
-	keep[0] = False
-	return keep[labels]
 
 
 def apply_normalization(x: torch.Tensor, norm_stats) -> torch.Tensor:
@@ -566,9 +559,7 @@ def _render_heatmap(grid, title, colorbar_label, marker=None):
 
 def build_radar_snapshot_plot(png_path, location=None):
     """Render the raw radar PNG at `png_path` using the same style as predictions."""
-    intensity_points = png_to_xy_intensity(str(png_path), include_zero=True)
-    intensity_grid = points_to_intensity_grid(intensity_points)
-    radar_grid = remove_small_echoes(np.asarray(intensity_grid, dtype=np.float32) / 100.0)
+    radar_grid = remove_small_echoes(decode_png(png_path, SOURCE))
     radar_plot = np.flipud(radar_grid)
     marker = None
     if location and in_coverage(*map(float, location)):
@@ -587,7 +578,7 @@ def build_radar_snapshot_plot(png_path, location=None):
     caption = rain_notice('RADAR SNAPSHOT', observed)
     if marker is not None:
         title = 'RAIN DETECTED' if value > 0.01 else 'NO RAIN DETECTED'
-        caption = rain_notice(title, observed, radius=radius, intensity=value)
+        caption = rain_notice(title, observed, radius=radius, observed_category=source_category(value))
         caption += '\nPink marker: your saved location'
     else:
         caption += "\nUse /start to save your location and show it on the map."
@@ -631,9 +622,18 @@ async def handle_actual(
         return
 
     location = await asyncio.to_thread(get_location, update.effective_user.id)
-    plot_buffer, caption = await asyncio.to_thread(build_radar_snapshot_plot, latest_png, location)
-
-    await update.message.reply_photo(photo=plot_buffer, caption=caption, reply_markup=main_menu())
+    try:
+        plot_buffer, caption = await asyncio.to_thread(build_radar_snapshot_plot, latest_png, location)
+    except (OSError, ValueError) as exc:
+        print(f"Actual radar unavailable: {exc}")
+        await update.message.reply_text(
+            "ACTUAL RADAR UNAVAILABLE\n\nThe latest radar image could not be decoded. Please try again shortly.",
+            reply_markup=main_menu())
+        return
+    try:
+        await update.message.reply_photo(photo=plot_buffer, caption=caption, reply_markup=main_menu())
+    finally:
+        plot_buffer.close()
 
 
 def build_location_forecast(latitude, longitude, latest_prediction):
@@ -723,11 +723,13 @@ async def check_model_queue(context, model, folder_path, norm_stats, model_ready
         if result is None:
             print(f"Model run failed for {tick}; retained for retry")
             continue
-        await send_auto_update(context, result)
+        updated = await send_auto_update(context, result)
         pending.discard(tick)
         current = context.application.bot_data.get("latest_prediction")
         if current is None or result["observed_at"] > current["observed_at"]:
             context.application.bot_data["latest_prediction"] = result
+        if updated and is_fresh(result):
+            await send_heartbeat()
     # Retry durable notifications even when there are no newly arrived radar frames.
     await deliver_notifications(context, reply_markup=main_menu())
 

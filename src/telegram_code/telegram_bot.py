@@ -2,6 +2,8 @@ import logging
 from functools import partial
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.request import HTTPXRequest
+from telegram_code.cute_mode import CuteBot, cutemode
 
 try:
     from .methods import check_model_queue, handle_actual, handle_location, handle_msg, load_token, start
@@ -29,13 +31,13 @@ def run_bot(model, folder_path, model_ready_queue, norm_stats=None) -> None:
 
     app = (
         Application.builder()
-        .token(token)
-        .connect_timeout(30)
-        .read_timeout(30)
-        .write_timeout(30)
-        .pool_timeout(30)
+        .bot(CuteBot(token=token, request=HTTPXRequest(
+            connect_timeout=30, read_timeout=30, write_timeout=30, pool_timeout=30,
+        )))
         .build()
     )
+    # Hidden command: registered for typed input only, never added to keyboards/menu.
+    app.add_handler(CommandHandler("cutemode", cutemode))
     app.add_handler(get_conversation_handler())
 
     app.job_queue.run_repeating(
