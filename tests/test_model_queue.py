@@ -18,7 +18,7 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         heartbeat=AsyncMock()
         deliver=AsyncMock()
         env=dict(queue=queue,run_model=run,send_auto_update=notify,deliver_notifications=deliver,main_menu=lambda:None,
-                 send_heartbeat=heartbeat,is_fresh=lambda result:True)
+                 send_pipeline_heartbeat=heartbeat,is_fresh=lambda result:True)
         exec(compile(ast.Module(body=[function],type_ignores=[]),'queue','exec'),env)
         context=types.SimpleNamespace(application=types.SimpleNamespace(bot_data={}))
         arrivals=queue.Queue()
@@ -33,20 +33,21 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(deliver.await_count,2)
         heartbeat.assert_awaited_once()
 
-        # Replaying stale data must not make a stopped scraper look healthy.
+        # Old replay must not advance the stored observation time.
         env['is_fresh'] = lambda result: False
         run.side_effect = None
         run.return_value = prediction
         arrivals.put(202609101205)
         await env['check_model_queue'](context,None,'.',None,arrivals)
-        heartbeat.assert_awaited_once()
+        self.assertEqual(context.application.bot_data['kuma_processed_observed_at'], prediction['observed_at'])
+        heartbeat.reset_mock()
 
         env['is_fresh'] = lambda result: True
         notify.side_effect = RuntimeError('database unavailable')
         arrivals.put(202609101210)
         with self.assertRaises(RuntimeError):
             await env['check_model_queue'](context,None,'.',None,arrivals)
-        heartbeat.assert_awaited_once()
+        heartbeat.assert_not_awaited()
 
 
 if __name__=='__main__':

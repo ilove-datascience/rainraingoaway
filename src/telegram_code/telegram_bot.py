@@ -28,6 +28,9 @@ def run_bot(model, folder_path, model_ready_queue, norm_stats=None) -> None:
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",
         level=logging.INFO,
     )
+    # INFO request URLs contain the Telegram bot token.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     app = (
         Application.builder()

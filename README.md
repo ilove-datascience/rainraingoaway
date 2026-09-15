@@ -155,24 +155,23 @@ Cute mode does not change weather facts, alert timing, or keyboard options.
 
 ## Uptime Kuma monitoring
 
-Create a **Push** monitor named **RainRaingoAway**, with a **360-second heartbeat
-interval** and **2–3 retries**. Forecast cycles follow five-minute radar ticks;
-a 60-second monitor interval would report false downtime between healthy cycles.
+Create a **Push** monitor named **RainRaingoAway**, with a **60-second heartbeat
+interval** and **2–3 retries**.
 
-Copy the complete push URL supplied by Kuma into `.env`, including any query
-parameters it provides:
+Copy the complete push URL into `.env` and restart:
 
 ```dotenv
 KUMA_PUSH_URL=https://YOUR_KUMA_HOST/api/push/YOUR_SECRET_TOKEN
 ```
 
-The bot must be able to reach this address. Restart after configuring it. Leaving
-it unset or empty disables heartbeats.
-
-A heartbeat is sent only after a fresh radar/environment prediction and successful
-database state processing, including when there are no registered locations.
-Failed inference, database errors, and stale backlog predictions do not send
-heartbeats. A heartbeat is not proof that every Telegram notification was delivered.
+Keep any query parameters supplied by Kuma. Leaving the URL unset disables monitoring.
+The bot sends at most one heartbeat per minute after successful queue/database
+processing. It requires a successfully processed radar observation less than
+15 minutes old, allowing normal radar publication delays. Failed inference or
+database operations suppress the heartbeat for that cycle. Stalled radar eventually
+stops heartbeats; repeated old frames cannot extend this window. Forecast display
+and alert freshness remain governed by the original five-minute forecast window.
+This monitor does not guarantee that every Telegram notification was delivered.
 
 Push requests run outside the Telegram event loop, have a five-second timeout,
 and do not stop the bot if Kuma is unreachable. The push URL is a secret; do not
