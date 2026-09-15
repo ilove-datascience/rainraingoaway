@@ -69,3 +69,19 @@ def test_preserves_facts_and_caption_limits():
     assert 'may be padding away' in styled
     assert cute_mode.cat_text('x' * 1024, 1024) == 'x' * 1024
     assert cute_mode.cat_text(None, 1024) is None
+
+
+@pytest.mark.asyncio
+async def test_settings_flow_has_no_repeated_cat_footer(preferences):
+    cute_mode.toggle_cute(1)
+    bot = cute_mode.CuteBot('123:fake')
+    messages = [
+        'Current alert setting: automatic.',
+        'Select mode:',
+        'Automatic alerts enabled: one when rain is predicted, then only when '
+        'rain is predicted to end or radar shows it has ended.',
+    ]
+    with patch.object(ExtBot, 'send_message', new_callable=AsyncMock) as send:
+        for text in messages:
+            await bot.send_message(1, text)
+            assert send.call_args.args[1] == text

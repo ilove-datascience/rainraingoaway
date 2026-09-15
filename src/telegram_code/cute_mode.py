@@ -34,7 +34,7 @@ def toggle_cute(chat_id):
 
 
 def cat_text(text, limit):
-    """Append personality without altering weather facts or Telegram entity offsets."""
+    """Style weather updates; leave menus and confirmations concise."""
     if not text:
         return text
     title = text.split('\n', 1)[0]
@@ -51,7 +51,7 @@ def cat_text(text, limit):
     elif 'RAIN DETECTED' in title:
         extra = 'Rain is here—keep those little paws dry, meow! 🐾'
     else:
-        extra = 'Your little weather cat is on paw-trol, meow! 🐾'
+        return text
     result = f'{text}\n\n{extra}'
     return result if len(result.encode('utf-16-le')) // 2 <= limit else text
 
