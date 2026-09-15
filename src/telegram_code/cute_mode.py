@@ -1,6 +1,7 @@
 """Hidden, persistent cat-style messages for private bot chats."""
 import asyncio
 import logging
+import random
 import sqlite3
 from pathlib import Path
 
@@ -34,24 +35,54 @@ def toggle_cute(chat_id):
 
 
 def cat_text(text, limit):
-    """Style weather updates; leave menus and confirmations concise."""
+    """Add a randomly chosen cat line without changing facts or entity offsets."""
     if not text:
         return text
     title = text.split('\n', 1)[0]
     if 'DELAYED' in title or 'UNAVAILABLE' in title:
-        extra = 'My weather whiskers need a moment. Please try again soon, meow! 🐾'
+        lines = ('My weather whiskers need a moment. Please try again soon, meow! 🐾',
+                 'One moment, please—my radar whiskers are untangling. 🐱',
+                 'A tiny weather hiccup. Please check back soon, meow. 🐾')
     elif 'NO LONGER EXPECTED' in title or 'NO RAIN' in title:
-        extra = 'No rain on my whiskers for now, meow! 🐾'
+        lines = ('No rain on my whiskers for now, meow! 🐾',
+                 'No rain expected for now. A little window-watching break, perhaps? 🐈',
+                 'The forecast says no rain for now. Purr-fect for a whisker break. 🐱')
     elif 'EXPECTED TO CLEAR' in title:
-        extra = 'The rain may be padding away soon, meow! 🐾'
+        lines = ('The rain may be padding away soon, meow! 🐾',
+                 'The rain might be packing up its tiny suitcase. 🧳🐈',
+                 'A break in the rain may be coming. Whiskers crossed! 🐱')
     elif 'RAIN CLEARED' in title:
-        extra = 'The rain has padded away, meow! 🐾'
+        lines = ('The rain has padded away, meow! 🐾',
+                 'Radar says the rain has cleared. Cue the little cat stretch. 🐈',
+                 'Rain cleared! Time to peek out from under the umbrella. 🐱☂️')
     elif 'RAIN EXPECTED' in title:
-        extra = 'Rain might be padding over—keep your paws dry, meow! 🐾'
+        lines = ('Rain might be padding over—keep your paws dry, meow! 🐾',
+                 'Possible rain incoming. Your umbrella has been summoned, meow! ☂️🐱',
+                 'Rain may visit soon. I suggest the cosy side of the window. 🐈',
+                 'A little heads-up from your weather cat: umbrella at the ready! 🐾☂️')
     elif 'RAIN DETECTED' in title:
-        extra = 'Rain is here—keep those little paws dry, meow! 🐾'
+        lines = ('Rain is here—keep those little paws dry, meow! 🐾',
+                 'Radar spotted rain. Deploy the umbrella, human! 🐱☂️',
+                 'Wet-paw weather detected. A cosy shelter sounds nice. 🐈')
+    elif title.startswith('Current alert setting:'):
+        lines = ('A peek at your weather-cat preferences. 🐱',
+                 'Here is how your little forecast assistant is set up. 🐾',
+                 'Checking the cat control panel… 🐈')
+    elif title.startswith('Select mode:'):
+        lines = ('How would you like your weather served, human? 🐱',
+                 'Your paws, your choice. Pick an option below! 🐾',
+                 'Choose my assignment, meow! 🐈')
+    elif title.startswith('Automatic alerts enabled:'):
+        lines = ('Reporting for weather duty, meow! 🫡🐱',
+                 'Tiny paws, important weather business. 🐾',
+                 'Your weather cat has clocked in. 🐈')
+    elif title.startswith('Automatic alerts paused.'):
+        lines = ('Taking a little catnap. Ask for a forecast whenever you like. 💤🐱',
+                 'On-demand weather it is, meow! 🐾',
+                 'I will be by the window when you need me. 🐈')
     else:
         return text
+    extra = random.choice(lines)
     result = f'{text}\n\n{extra}'
     return result if len(result.encode('utf-16-le')) // 2 <= limit else text
 

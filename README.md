@@ -133,18 +133,22 @@ Send `/cutemode` in a private chat to toggle cat-style messages. This typed comm
 is not listed in the bot's buttons or command menu. Preferences are saved per chat
 in `data/bot_preferences.sqlite3` and survive restarts.
 
-Forecasts and rain alerts get a weather-specific line, for example:
+Forecasts and rain alerts randomly choose from several weather-specific lines. Repeats are allowed. Examples:
 
 - Rain expected: “Rain might be padding over—keep your paws dry, meow! 🐾”
 - No rain expected: “No rain on my whiskers for now, meow! 🐾”
 - Rain cleared: “The rain has padded away, meow! 🐾”
 
-Menus and settings confirmations stay concise, without a repeated cat footer:
+Settings prompts and confirmations also get short, context-specific cat lines. For example:
 
 ```text
 Current alert setting: automatic.
 
+A peek at your weather-cat preferences. 🐱
+
 Select mode:
+
+Choose my assignment, meow! 🐈
 ```
 
 Cute mode does not change weather facts, alert timing, or keyboard options.

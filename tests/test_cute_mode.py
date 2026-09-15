@@ -29,7 +29,8 @@ async def test_replies_and_alert_captions_use_current_preference(preferences):
     bot = cute_mode.CuteBot('123:fake')
     text = 'RAIN EXPECTED | FORECAST\nForecast for: 15 Sep, 12:05 SGT'
     markup = object()
-    with patch.object(ExtBot, 'send_message', new_callable=AsyncMock) as message, \
+    with patch.object(cute_mode.random, 'choice', side_effect=lambda lines: lines[0]), \
+         patch.object(ExtBot, 'send_message', new_callable=AsyncMock) as message, \
          patch.object(ExtBot, 'send_photo', new_callable=AsyncMock) as photo:
         await bot.send_message(1, text, reply_markup=markup)
         assert message.call_args.args[1] == text
@@ -64,7 +65,8 @@ async def test_hidden_command_toggles_without_changing_conversation(preferences)
 
 def test_preserves_facts_and_caption_limits():
     text = 'RAIN EXPECTED TO CLEAR | FORECAST\nExpected intensity: Light\nArea: ~500 m'
-    styled = cute_mode.cat_text(text, 1024)
+    with patch.object(cute_mode.random, 'choice', side_effect=lambda lines: lines[0]):
+        styled = cute_mode.cat_text(text, 1024)
     assert styled.startswith(text)
     assert 'may be padding away' in styled
     assert cute_mode.cat_text('x' * 1024, 1024) == 'x' * 1024
@@ -72,7 +74,7 @@ def test_preserves_facts_and_caption_limits():
 
 
 @pytest.mark.asyncio
-async def test_settings_flow_has_no_repeated_cat_footer(preferences):
+async def test_settings_flow_keeps_facts_and_uses_contextual_cat_lines(preferences):
     cute_mode.toggle_cute(1)
     bot = cute_mode.CuteBot('123:fake')
     messages = [
@@ -84,4 +86,22 @@ async def test_settings_flow_has_no_repeated_cat_footer(preferences):
     with patch.object(ExtBot, 'send_message', new_callable=AsyncMock) as send:
         for text in messages:
             await bot.send_message(1, text)
-            assert send.call_args.args[1] == text
+            assert send.call_args.args[1].startswith(text + '\n\n')
+            assert 'paw-trol' not in send.call_args.args[1]
+
+
+def test_each_context_has_variety_and_preserves_original_text():
+    titles = ['RAIN EXPECTED', 'NO RAIN EXPECTED', 'RAIN EXPECTED TO CLEAR',
+              'RAIN CLEARED', 'RAIN DETECTED', 'FORECAST UNAVAILABLE',
+              'Current alert setting: automatic.', 'Select mode:',
+              'Automatic alerts enabled:', 'Automatic alerts paused.']
+    for title in titles:
+        text = title + '\nOriginal details'
+        variants = set()
+        for index in range(3):
+            with patch.object(cute_mode.random, 'choice', side_effect=lambda lines: lines[index]):
+                styled = cute_mode.cat_text(text, 4096)
+            assert styled.startswith(text + '\n\n')
+            variants.add(styled)
+        assert len(variants) == 3
+    assert cute_mode.cat_text('Unrecognized message', 4096) == 'Unrecognized message'
