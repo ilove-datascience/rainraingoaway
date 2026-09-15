@@ -487,74 +487,54 @@ def render_heatmap(grid, title, colorbar_label, marker=None):
 
 
 def _render_heatmap(grid, title, colorbar_label, marker=None):
-    """Render `grid` (values in [0, 1]) over the Singapore base map.
+    """Render a phone-friendly weather card with unchanged radar coordinates."""
+    sg_base_img = np.flipud(plt.imread(
+        str(Path(__file__).resolve().parents[2] / "sgbaseimg_70km.png")))
+    background, ink, muted = "#f3f6fa", "#172b46", "#61738b"
+    fig = plt.figure(figsize=(8, 7), dpi=160, facecolor=background)
+    try:
+        heading, separator, timestamp = title.partition(" | ")
+        fig.text(0.07, 0.95, "RAINRAINGOAWAY  /  SINGAPORE", fontsize=10,
+                 weight="bold", color=muted)
+        fig.text(0.07, 0.905, heading, fontsize=21, weight="bold", color=ink)
+        if separator:
+            fig.text(0.07, 0.872, timestamp, fontsize=11, color=muted)
+        ax = fig.add_axes([0.055, 0.19, 0.89, 0.64])
+        ax.set_facecolor("white")
+        ax.imshow(sg_base_img, origin="lower",
+                  extent=[0, grid.shape[1] - 1, 0, grid.shape[0] - 1], zorder=0)
+        im = ax.imshow(grid, cmap="turbo", origin="lower",
+                       alpha=np.where(grid < 0.003, 0.0, 0.78),
+                       norm=PowerNorm(gamma=0.6, vmin=0.0, vmax=1.0),
+                       interpolation="nearest", aspect="equal", zorder=1)
+        if marker is not None:
+            pixel_x, pixel_y = marker
+            ax.scatter(pixel_x, pixel_y, c="#f0529c", s=230, alpha=0.2,
+                       edgecolors="none", zorder=3)
+            ax.scatter(pixel_x, pixel_y, c="#e83288", s=65,
+                       edgecolors="white", linewidths=2, zorder=4)
+            fig.text(0.07, 0.17, "●", color="#e83288", fontsize=13)
+            fig.text(0.095, 0.17, "Your saved location", fontsize=10, color=muted)
+        ax.set_xlim(0, grid.shape[1] - 1)
+        ax.set_ylim(0, grid.shape[0] - 1)
+        ax.set_axis_off()
+        scale_ax = fig.add_axes([0.07, 0.09, 0.86, 0.018])
+        # Use an opaque legend even though rain is blended over the map.
+        from matplotlib.cm import ScalarMappable
+        cbar = fig.colorbar(ScalarMappable(norm=im.norm, cmap=im.cmap),
+                            cax=scale_ax, orientation="horizontal")
+        cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
+        cbar.outline.set_visible(False)
+        cbar.ax.tick_params(labelsize=9, colors=muted, length=0, pad=6)
+        fig.text(0.07, 0.125, colorbar_label, fontsize=10, color=ink)
+        fig.text(0.93, 0.125, "LOW → HIGH", fontsize=9, color=muted, ha="right")
+        plot_buffer = BytesIO()
+        fig.savefig(plot_buffer, format="png", facecolor=background)
+        plot_buffer.seek(0)
+        return plot_buffer
+    finally:
+        plt.close(fig)
 
-    Shared plot style for both model predictions and raw radar snapshots.
-    """
-    sg_base_img = np.flipud(
-        plt.imread(
-            str(Path(__file__).resolve().parents[2] / "sgbaseimg_70km.png")
-        )
-    )
-
-    clear_mask = grid < 0.003
-    alpha = np.where(clear_mask, 0.0, 0.78)
-
-    fig, ax = plt.subplots(figsize=(10, 5.6), dpi=160)
-    ax.set_facecolor("white")
-
-    ax.imshow(
-        sg_base_img,
-        origin="lower",
-        extent=[0, grid.shape[1] - 1, 0, grid.shape[0] - 1],
-        zorder=0
-    )
-
-    im = ax.imshow(
-        grid,
-        cmap="turbo",
-        origin="lower",
-        alpha=alpha,
-        norm=PowerNorm(gamma=0.6, vmin=0.0, vmax=1.0),
-        interpolation="nearest",
-        aspect="equal",
-        zorder=1
-    )
-
-    if marker is not None:
-        pixel_x, pixel_y = marker
-        ax.scatter(
-            pixel_x,
-            pixel_y,
-            c="hotpink",
-            s=110,
-            edgecolors="white",
-            linewidths=2,
-            zorder=3,
-            label="User location"
-        )
-
-    ax.set_title(title, fontsize=13, weight="bold", pad=12)
-    ax.set_xlabel("Pixel X")
-    ax.set_ylabel("Pixel Y")
-    ax.set_xlim(0, grid.shape[1] - 1)
-    ax.set_ylim(0, grid.shape[0] - 1)
-
-    cbar = fig.colorbar(im, ax=ax, fraction=0.035, pad=0.025)
-    cbar.set_label(colorbar_label, rotation=270, labelpad=18)
-    cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
-
-    if marker is not None:
-        ax.legend(loc="lower left", bbox_to_anchor=(0.0, 1.02), frameon=False)
-
-    plt.tight_layout()
-
-    plot_buffer = BytesIO()
-    plt.savefig(plot_buffer, format="png", bbox_inches="tight", facecolor="white")
-    plot_buffer.seek(0)
-    plt.close(fig)
-
-    return plot_buffer
 
 
 def build_radar_snapshot_plot(png_path, location=None):
