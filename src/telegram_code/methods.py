@@ -48,8 +48,7 @@ def main_menu():
 # mask sweep: cleanest background/noise rejection with best large-component IoU among
 # configs within ~0.001 CSI of the peak (see mask_extended_validation_report.csv).
 SEQUENCE_LENGTH = 3
-RAIN_PROBABILITY_THRESHOLD = 0.55
-MIN_COMPONENT_SIZE = 25
+from telegram_code.forecast_mask import clean_rain_mask, RAIN_PROBABILITY_THRESHOLD, MIN_COMPONENT_SIZE
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RADAR_FOLDER = PROJECT_ROOT / "data" / "70km" / "png"
@@ -65,16 +64,6 @@ ZSCORE_CHANNELS = [CH_TEMP, CH_HUM, CH_WIND_U, CH_WIND_V]
 
 ENV_TICK_TOLERANCE_MINUTES = 15
 
-
-
-def clean_rain_mask(probability: np.ndarray) -> np.ndarray:
-	"""Threshold the rain-probability map and drop small components."""
-	hard_mask = probability >= RAIN_PROBABILITY_THRESHOLD
-	labels, _ = ndimage.label(hard_mask, structure=np.ones((3, 3), dtype=np.uint8))
-	component_sizes = np.bincount(labels.ravel())
-	keep = component_sizes >= MIN_COMPONENT_SIZE
-	keep[0] = False
-	return keep[labels]
 
 
 def apply_normalization(x: torch.Tensor, norm_stats) -> torch.Tensor:
