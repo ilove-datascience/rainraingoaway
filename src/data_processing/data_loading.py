@@ -2,11 +2,11 @@ SEED = 67
 import json
 import os
 import threading
-import torch 
+import torch
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import pandas as pd
-import numpy as np 
+import numpy as np
 from pathlib import Path
 import sys
 from scipy.ndimage import label
@@ -24,6 +24,8 @@ if __package__ in {None, ""}:
 else:
     from .pngtojson import points_to_intensity_grid, png_to_xy_intensity
     from masking import lat_long_to_pixel
+
+from data_processing.radar_codec import LEGACY, decode_png, validate_version
 
 
 def remove_small_echoes(
@@ -56,14 +58,14 @@ def remove_small_echoes(
 def load_data(folder_path, total):
     # Load the data from the specified folder
     data = dict()
-    count = 0 
+    count = 0
     for file_name in os.listdir(folder_path):
-        
+
         if file_name.endswith('.png'):
-            
+
             if total is not None and count >= total:
                 break
-            
+
             intensity_points = png_to_xy_intensity(os.path.join(folder_path, file_name),include_zero=True)
             #intensity_points = png_to_xy_binary(os.path.join(folder_path, file_name),include_zero=True)
             intensity_grid = points_to_intensity_grid(intensity_points )
@@ -72,12 +74,12 @@ def load_data(folder_path, total):
             data[file_name] = intensity_df
             count += 1
     print(f"Loaded {count} images.")
-    
+
     return data
 
 def load_specific_data(file_names:list, folder_path):
     data = list()
-    count = 0 
+    count = 0
     existing_files = set(os.listdir(folder_path))
     for file_name in sorted(file_names):
 
@@ -92,11 +94,11 @@ def load_specific_data(file_names:list, folder_path):
             data.append(intensity_df)
             count += 1
     print(f"Loaded {count} images.")
-    
+
     return data
 
 #prev_key = first_key
-def create_samples(data, list_length=10, min_list_length = 7, num_target_steps=1):
+def create_samples(data, list_length=10, min_list_length = 7, num_target_steps=1, stride=None):
     """Group consecutive 5-minute frames into (inputs, targets) samples.
 
     `num_target_steps` controls how many trailing frames are split off as the
@@ -108,6 +110,9 @@ def create_samples(data, list_length=10, min_list_length = 7, num_target_steps=1
         raise ValueError("list_length and num_target_steps must be positive")
 
     group_size = list_length + num_target_steps
+    stride = group_size if stride is None else stride
+    if not isinstance(stride, int) or isinstance(stride, bool) or stride < 1:
+        raise ValueError("stride must be a positive integer")
     keys = sorted(data.keys())
     if not keys:
         return [], []
@@ -132,7 +137,7 @@ def create_samples(data, list_length=10, min_list_length = 7, num_target_steps=1
     inputs = []
     targets = []
     for run in runs:
-        for start in range(0, len(run) - group_size + 1, group_size):
+        for start in range(0, len(run) - group_size + 1, stride):
             group = run[start:start + group_size]
             inputs.append(group[:list_length])
             if num_target_steps == 1:
@@ -141,17 +146,36 @@ def create_samples(data, list_length=10, min_list_length = 7, num_target_steps=1
                 targets.append(group[-num_target_steps:])
 
     return inputs, targets
-            
-  
-def _get_cache_paths(cache_dir, radar_name):
+
+
+def chronological_frame_partitions(data):
+    """Assign whole dates before windowing; no frame can cross partitions."""
+    keys = sorted(data)
+    days = sorted({str(key)[:8] for key in keys})
+    first, second = int(len(days) * .75), int(len(days) * .90)
+    if not 0 < first < second < len(days):
+        raise ValueError("Need enough distinct dates for nonempty 75/15/10 partitions")
+    boundaries = (days[first], days[second])
+    partitions = {name: {} for name in ('train', 'validation', 'test')}
+    for key in keys:
+        day = str(key)[:8]
+        name = 'train' if day < boundaries[0] else 'validation' if day < boundaries[1] else 'test'
+        partitions[name][key] = data[key]
+    return partitions
+
+
+def _get_cache_paths(cache_dir, radar_name, decoder_version=LEGACY):
+    validate_version(decoder_version)
     cache_dir = Path(cache_dir)
+    if decoder_version != LEGACY:
+        cache_dir = cache_dir / decoder_version
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"{radar_name}.npy"
     metadata_file = cache_dir / f"{radar_name}.json"
     return cache_dir, cache_file, metadata_file
 
 
-def _read_cache(cache_file, metadata_file, radar_path, env_path):
+def _read_cache(cache_file, metadata_file, radar_path, env_path, decoder_version=LEGACY):
     if not cache_file.exists() or not metadata_file.exists():
         return None
 
@@ -160,6 +184,8 @@ def _read_cache(cache_file, metadata_file, radar_path, env_path):
     except (json.JSONDecodeError, OSError):
         return None
 
+    if metadata.get("decoder_version", LEGACY) != decoder_version:
+        return None
     if metadata.get("radar_cleaning_version") != RADAR_CLEANING_VERSION:
         return None
 
@@ -169,13 +195,14 @@ def _read_cache(cache_file, metadata_file, radar_path, env_path):
         return None
 
 
-def _write_cache(cache_file, metadata_file, radar_path, env_path, array):
+def _write_cache(cache_file, metadata_file, radar_path, env_path, array, decoder_version=LEGACY):
     cache_file = Path(cache_file)
     metadata_file = Path(metadata_file)
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     np.save(cache_file, array)
 
     metadata = {
+        "decoder_version": decoder_version,
         "radar_mtime": os.path.getmtime(radar_path),
         "env_mtime": os.path.getmtime(env_path),
         "radar_cleaning_version": RADAR_CLEANING_VERSION,
@@ -186,7 +213,7 @@ def _write_cache(cache_file, metadata_file, radar_path, env_path, array):
 
 
 def _load_multimodal_frame(task):
-    file_name, radar_dir, env_dir, verbose, log_lock, use_cache, cache_dir = task
+    file_name, radar_dir, env_dir, verbose, log_lock, use_cache, cache_dir, decoder_version = task
     radar_name = file_name.replace('.png', '')
     env_file_name = f"weather_{radar_name}.csv"
     env_path = os.path.join(env_dir, env_file_name)
@@ -198,17 +225,15 @@ def _load_multimodal_frame(task):
 
     try:
         if use_cache:
-            cache_dir_path, cache_file, metadata_file = _get_cache_paths(cache_dir, radar_name)
-            cached_array = _read_cache(cache_file, metadata_file, radar_path, env_path)
+            cache_dir_path, cache_file, metadata_file = _get_cache_paths(cache_dir, radar_name, decoder_version)
+            cached_array = _read_cache(cache_file, metadata_file, radar_path, env_path, decoder_version)
             if cached_array is not None:
                 if verbose:
                     with log_lock:
                         print(f"loaded {file_name} from cache with shape {cached_array.shape}")
                 return cached_array.astype(np.float32), 'ok', radar_name, env_file_name
 
-        intensity_points = png_to_xy_intensity(radar_path, include_zero=True)
-        intensity_grid = points_to_intensity_grid(intensity_points)
-        radar_grid = remove_small_echoes(np.asarray(intensity_grid, dtype=np.float32) / 100.0)
+        radar_grid = remove_small_echoes(decode_png(radar_path, decoder_version))
 
         env_stack = build_env_data(
             env_path,
@@ -229,6 +254,7 @@ def _load_multimodal_frame(task):
                 radar_path,
                 env_path,
                 combined_stack,
+                decoder_version,
             )
 
         if verbose:
@@ -266,7 +292,7 @@ def _find_env_csv(tick, folder_path_env, tolerance_minutes=ENV_TICK_TOLERANCE_MI
 
 
 def build_and_cache_frame(tick, img_name="70km", folder_path_radar=None,
-                          folder_path_env=None, cache_dir=None, verbose=True):
+                          folder_path_env=None, cache_dir=None, verbose=True, decoder_version=LEGACY):
     """Build the 7-channel multimodal frame for one tick and write it to cache.
 
     Returns the [7, H, W] float32 array on success, or None if the radar PNG or
@@ -301,15 +327,13 @@ def build_and_cache_frame(tick, img_name="70km", folder_path_radar=None,
         return None
 
     # Already cached? Return the cached array.
-    cache_dir_path, cache_file, metadata_file = _get_cache_paths(cache_dir, radar_name)
-    cached = _read_cache(cache_file, metadata_file, radar_path, env_path)
+    cache_dir_path, cache_file, metadata_file = _get_cache_paths(cache_dir, radar_name, decoder_version)
+    cached = _read_cache(cache_file, metadata_file, radar_path, env_path, decoder_version)
     if cached is not None:
         return cached.astype(np.float32)
 
     try:
-        intensity_points = png_to_xy_intensity(radar_path, include_zero=True)
-        intensity_grid = points_to_intensity_grid(intensity_points)
-        radar_grid = remove_small_echoes(np.asarray(intensity_grid, dtype=np.float32) / 100.0)
+        radar_grid = remove_small_echoes(decode_png(radar_path, decoder_version))
 
         env_stack = build_env_data(
             env_path, verbose=False,
@@ -327,7 +351,7 @@ def build_and_cache_frame(tick, img_name="70km", folder_path_radar=None,
         _write_cache(
             cache_dir_path / f"{radar_name}.npy",
             cache_dir_path / f"{radar_name}.json",
-            radar_path, env_path, combined,
+            radar_path, env_path, combined, decoder_version,
         )
         if verbose:
             print(f"cached multimodal frame {radar_name} shape {combined.shape}")
@@ -338,7 +362,7 @@ def build_and_cache_frame(tick, img_name="70km", folder_path_radar=None,
         return None
 
 
-def load_data_multimodal(folder_path_radar, folder_path_env, total=None, verbose=True, num_workers=None, use_cache=True, cache_dir=None):
+def load_data_multimodal(folder_path_radar, folder_path_env, total=None, verbose=True, num_workers=None, use_cache=True, cache_dir=None, decoder_version=LEGACY):
     """Load multimodal radar frames and environmental channels in parallel when possible, with optional disk caching."""
     data = dict()
     skipped_missing_env = 0
@@ -360,7 +384,7 @@ def load_data_multimodal(folder_path_radar, folder_path_env, total=None, verbose
 
     log_lock = threading.Lock()
     tasks = [
-        (file_name, folder_path_radar, folder_path_env, verbose, log_lock, use_cache, cache_dir)
+        (file_name, folder_path_radar, folder_path_env, verbose, log_lock, use_cache, cache_dir, decoder_version)
         for file_name in radar_files
     ]
 
@@ -392,10 +416,17 @@ def load_data_multimodal(folder_path_radar, folder_path_env, total=None, verbose
 
     return data
 
-def build_env_data(env_path, verbose=True, height=120, width=217):
+def build_env_data(env_path, verbose=True, height=120, width=217, as_of=None):
     data_cols = ["humidity", "temperature", "wind_dir", "wind_speed"]
     loc_cols = ["longitude", "latitude"]
     env_df = pd.read_csv(env_path)
+    if as_of is not None:
+        if 'timestamp' not in env_df:
+            raise ValueError('Timestamped observations required for causal weather inputs')
+        observation_time = pd.to_datetime(env_df['timestamp'], utc=True, errors='coerce')
+        cutoff = pd.Timestamp(as_of)
+        cutoff = cutoff.tz_localize('Asia/Singapore') if cutoff.tzinfo is None else cutoff
+        env_df = env_df[observation_time <= cutoff.tz_convert('UTC')]
     required_cols = loc_cols + data_cols
 
     missing_cols = [column for column in required_cols if column not in env_df.columns]
@@ -499,7 +530,7 @@ def build_env_data(env_path, verbose=True, height=120, width=217):
     )
     return env_stack.astype(np.float32)
 
-# testing multimodal loading 
+# testing multimodal loading
 if __name__ == "__main__":
     workspace_root = Path(__file__).resolve().parents[2]
     radar_folder = workspace_root / "data" / "70km" / "png"

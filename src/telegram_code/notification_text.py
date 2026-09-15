@@ -17,12 +17,16 @@ def intensity_label(value, actual=False):
     return 'Heavy'
 
 
-def rain_notice(title, observed, forecast=None, radius=None, intensity=None):
+def rain_notice(title, observed, forecast=None, radius=None, intensity=None, observed_category=None):
     """Intent first, then intensity, timestamp and area in the same order."""
     actual = forecast is None
     source = 'ACTUAL RADAR' if actual else 'FORECAST'
     lines = [f'{title} | {source}', '']
-    if intensity is not None:
+    if observed_category is not None and not actual:
+        raise ValueError("Source categories are only valid for actual radar")
+    if observed_category is not None:
+        lines.append(f"Observed intensity: {observed_category} (source radar scale)")
+    elif intensity is not None:
         kind = 'Observed' if actual else 'Expected'
         lines.append(f'{kind} intensity: {intensity_label(intensity, actual=actual)} (radar scale)')
     if not actual:

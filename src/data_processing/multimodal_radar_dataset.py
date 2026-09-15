@@ -6,13 +6,15 @@ import numpy as np
 from torch.utils.data import Dataset
 from scipy.ndimage import label
 
-from .data_loading import load_data_multimodal, create_samples
+from .data_loading import load_data_multimodal, create_samples, chronological_frame_partitions
+from .radar_codec import LEGACY, validate_version
 
 class radar_dataset_multimodal(Dataset):
     def __init__(self, folderloc_radar, folderloc_env, total, list_length=10,
                  min_list_length=10, num_workers=None, land_use_path=None, use_land_use=True,
-                 num_target_steps=1):
+                 num_target_steps=1, decoder_version=LEGACY, overlapping_training=False):
         min_list_length = list_length
+        self.decoder_version = validate_version(decoder_version)
         self.use_land_use = use_land_use
         self.num_target_steps = num_target_steps
 
@@ -49,19 +51,34 @@ class radar_dataset_multimodal(Dataset):
             )
             if self.land_use_masks.ndim != 3:
                 raise ValueError("land_use_masks must have shape [classes, H, W]")
-        
+
         self.data = load_data_multimodal(
             folder_path_radar=folderloc_radar,
             folder_path_env=folderloc_env,
             total=total,
             num_workers=num_workers,
+            decoder_version=self.decoder_version,
         )
-        self.x, self.y = create_samples(
-            self.data,
-            list_length=list_length,
-            min_list_length=min_list_length,
-            num_target_steps=num_target_steps,
-        )
+        self.split_indices = {}
+        self.frame_manifest = {}
+        if overlapping_training:
+            self.x, self.y = [], []
+            for name, frames in chronological_frame_partitions(self.data).items():
+                inputs, targets = create_samples(
+                    frames, list_length=list_length, num_target_steps=num_target_steps,
+                    stride=1 if name == 'train' else None,
+                )
+                if not inputs:
+                    raise ValueError(f"No complete windows in {name} partition")
+                self.split_indices[name] = list(range(len(self.x), len(self.x) + len(inputs)))
+                self.frame_manifest[name] = sorted(frames)
+                self.x.extend(inputs)
+                self.y.extend(targets)
+        else:
+            self.x, self.y = create_samples(
+                self.data, list_length=list_length, min_list_length=min_list_length,
+                num_target_steps=num_target_steps,
+            )
         if self._remove_persistent_echoes:
             self._remove_persistent_input_echoes()
         if len(self.x) > 0:
@@ -101,8 +118,12 @@ class radar_dataset_multimodal(Dataset):
                 if max(float(radar[timestep][component].max()) for timestep in range(radar.shape[0])) >= self._persistent_strong_threshold:
                     continue
 
-                for frame in frames:
-                    frame[self.channel_map["radar"]][component] = 0.0
+                # Windows share source tensors. Copy on write so input cleaning
+                # cannot alter another window or a future target.
+                for frame_index, frame in enumerate(frames):
+                    cleaned = frame.clone()
+                    cleaned[self.channel_map["radar"]][component] = 0.0
+                    frames[frame_index] = cleaned
                 removed_components += 1
 
         if removed_components:
@@ -156,6 +177,9 @@ class radar_dataset_multimodal(Dataset):
             self._distance_scale = None
             return
 
+        if stats.get('radar_decoder_version', LEGACY) != self.decoder_version:
+            raise ValueError('Normalization metadata and dataset decoder versions differ')
+
         ordered_names = ["temperature", "humidity", "wind_u", "wind_v"]
         means = [float(stats[name]["mean"]) for name in ordered_names]
         stds = [max(float(stats[name]["std"]), 1e-4) for name in ordered_names]
@@ -169,6 +193,7 @@ class radar_dataset_multimodal(Dataset):
             raise ValueError("Normalization stats are not initialized")
 
         return {
+            "radar_decoder_version": self.decoder_version,
             "temperature": {
                 "mean": float(self._zscore_mean[0].item()),
                 "std": float(self._zscore_std[0].item()),
@@ -212,9 +237,9 @@ class radar_dataset_multimodal(Dataset):
             sample[:, distance_idx, :, :] = torch.clamp(sample[:, distance_idx, :, :], min=0.0, max=1.0)
 
         return sample
-        
-        
-        
+
+
+
     def __len__(self):
         return len(self.x)
 

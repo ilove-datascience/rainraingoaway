@@ -7,6 +7,7 @@ import torch
 
 from data_processing.multimodal_radar_dataset import radar_dataset_multimodal
 from models.multi_modal_convlstm import ConvLSTM_MM
+from data_processing.model_contract import validate_contract
 from scraping.gov_api import main as run_weather_scraper_forever
 from scraping.frame_cache import run_frame_cache_worker
 from scraping.rain_areas import (
@@ -62,10 +63,11 @@ def load_model():
         if not checkpoints:
             raise FileNotFoundError(f"No model_best_*.pkl checkpoint found in {BASE_DIR / 'models'}")
         model_path = checkpoints[-1]
+    validate_contract(model_path, normalization=BASE_DIR / "models" / "normalization_stats.json")
     print(f"Loading model checkpoint: {model_path}")
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
-    return model 
+    return model
 
 
 def load_missing_png():
