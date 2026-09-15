@@ -1,9 +1,39 @@
+# Local environment and private data
 .env
-/data
+.env.*
+!.env.example
+.venv/
+venv/
 data/
-*/__pycache__/
-*/runs/
-src/model_*
-__pycache__/
-*.pyc
 userdata.csv
+
+# Python, test, and notebook caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+.coverage.*
+htmlcov/
+
+# Generated training artifacts (already tracked models remain tracked)
+runs/
+/models/
+/src/model_*
+
+# Generated evaluation outputs
+*.log
+/reports/
+/heldout_test_metadata.json
+/heldout_test_results.json
+/src/*_montage.png
+/src/mask_*_report.csv
+/src/mask_*tradeoffs.png
+/src/mask_extended_baseline_vs_best.png
+
+# OS metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
