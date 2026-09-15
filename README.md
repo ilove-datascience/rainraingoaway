@@ -90,6 +90,26 @@ The current notebook cell does not compare against a known future target image b
 
 `src/scraping/rain_areas.py` downloads the latest radar images for `70km` and `240km`. If a request times out, it now retries the same URL before falling back to an earlier 5-minute tick. This helps keep the scraper running through transient network issues.
 
+## Uptime Kuma bot monitoring
+
+Create a **Push** monitor named **RainRaingoAway** in Uptime Kuma. Set its
+heartbeat interval to **360 seconds** and retries to **2 or 3**. Radar cycles
+arrive every five minutes, so a 60-second interval would report false downtime.
+
+Add the complete push URL supplied by Kuma to your project `.env`, then restart
+the bot:
+
+```dotenv
+KUMA_PUSH_URL=http://192.168.86.200:3001/api/push/YOUR_SECRET_TOKEN
+```
+
+Leave it unset or empty to disable monitoring. The bot sends a heartbeat only
+after a fresh radar/environment prediction and successful database state
+processing (including when there are no registered locations). Failed inference,
+database errors, and stale backlog predictions do not send heartbeats. Kuma
+requests have a five-second timeout, run outside the Telegram event loop, and
+network failures do not stop the bot. The URL is a secret; do not commit it.
+
 ## Tips
 - If you need binary prediction thresholds, apply `prob > 0.5` (or another threshold) after sigmoid.
 - Keep model checkpoints in `models/` and add that folder to `.gitignore` if not already excluded.

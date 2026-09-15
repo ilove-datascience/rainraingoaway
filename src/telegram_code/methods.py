@@ -36,6 +36,7 @@ from telegram_code.notification_text import alert_text, rain_notice
 from telegram_code.local_rain import local_rain, in_coverage
 from telegram_code.rain_state import ENDED
 from telegram_code.database import get_user_mode
+from telegram_code.heartbeat import send_heartbeat
 
 
 def main_menu():
@@ -722,11 +723,13 @@ async def check_model_queue(context, model, folder_path, norm_stats, model_ready
         if result is None:
             print(f"Model run failed for {tick}; retained for retry")
             continue
-        await send_auto_update(context, result)
+        updated = await send_auto_update(context, result)
         pending.discard(tick)
         current = context.application.bot_data.get("latest_prediction")
         if current is None or result["observed_at"] > current["observed_at"]:
             context.application.bot_data["latest_prediction"] = result
+        if updated and is_fresh(result):
+            await send_heartbeat()
     # Retry durable notifications even when there are no newly arrived radar frames.
     await deliver_notifications(context, reply_markup=main_menu())
 
