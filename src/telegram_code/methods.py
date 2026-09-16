@@ -697,8 +697,27 @@ async def check_model_queue(context, model, folder_path, norm_stats, model_ready
             pending.add(int(model_ready_queue.get_nowait()))
         except queue.Empty:
             break
-    for tick in sorted(pending.copy()):
+    for tick in sorted(pending.copy(), reverse=True):
+        observed = datetime.strptime(str(tick), "%Y%m%d%H%M")
+        deadline = observed + timedelta(minutes=5)
+        if sg_now() >= deadline:
+            pending.discard(tick)
+            print(f"Expired model tick {tick}: forecast window has ended")
+            continue
+        if observed > sg_now():
+            continue
+        current = context.application.bot_data.get("latest_prediction")
+        if current is not None and observed <= current["observed_at"]:
+            pending.discard(tick)
+            continue
+        required = [observed - timedelta(minutes=5 * i) for i in range(SEQUENCE_LENGTH)]
+        if not all((Path(folder_path) / f"{dt:%Y%m%d%H%M}.png").is_file() for dt in required):
+            continue  # Wait for recent gaps to be repaired, only until the deadline.
         result = await run_model(model, folder_path, norm_stats, tick=tick)
+        if sg_now() >= deadline:
+            pending.discard(tick)
+            print(f"Expired model tick {tick} during inference; not sending alerts")
+            continue
         if result is None:
             print(f"Model run failed for {tick}; retained for retry")
             continue

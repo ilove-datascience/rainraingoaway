@@ -69,6 +69,24 @@ def scrape_once(img_names: tuple[str, ...] = ("70km", "240km"), file_ready_queue
             if img_name == "70km" and file_ready_queue is not None:
                 file_ready_queue.put(dt)
             fell_back_any = fell_back_any or fell_back
+            if img_name == "70km":
+                # Revisit gaps in the live three-frame input, even after the
+                # source has advanced. Exact fetches must not substitute a
+                # different timestamp and pretend the missing frame is fixed.
+                latest = datetime.strptime(str(dt), "%Y%m%d%H%M")
+                for offset in (1, 2):
+                    previous = int((latest - timedelta(minutes=5 * offset)).strftime("%Y%m%d%H%M"))
+                    path = DATA_DIR / img_name / "png" / f"{previous}.png"
+                    if path.is_file() and path.stat().st_size > 0:
+                        continue
+                    try:
+                        recovered, _, _ = fetch_radar_snapshot(img_name, previous, allow_fallback=False)
+                        print(f"Recovered missing radar frame {recovered}")
+                        if file_ready_queue is not None:
+                            file_ready_queue.put(recovered)
+                    except Exception as exc:
+                        print(f"Radar history gap {previous}: {exc}")
+                        fell_back_any = True
         except Exception as exc:
             print(f"Failed to capture {img_name}: {exc}")
             fell_back_any = True
@@ -179,7 +197,7 @@ def check_history(img_name: str, dt: int | None = None, count: int = 3) -> bool:
     return all_exist
 
 
-def fetch_radar_snapshot(img_name: str, dt: int | None = None) -> tuple[int, Path, bool]:
+def fetch_radar_snapshot(img_name: str, dt: int | None = None, *, allow_fallback: bool = True) -> tuple[int, Path, bool]:
     if dt is None:
         dt = datetime_now_str(offset_hours=SG_OFFSET_HOURS)
         
@@ -193,8 +211,8 @@ def fetch_radar_snapshot(img_name: str, dt: int | None = None) -> tuple[int, Pat
 
     # Try the computed timestamp first; if the server doesn't yet have
     # that image (404), fall back to earlier 5-minute ticks.
-    max_retries = 3
-    request_retries = 3
+    max_retries = 3 if allow_fallback else 0
+    request_retries = 3 if allow_fallback else 0
     retry_delay_seconds = 2
     dt_dt = datetime.strptime(str(dt), "%Y%m%d%H%M")
     response = None

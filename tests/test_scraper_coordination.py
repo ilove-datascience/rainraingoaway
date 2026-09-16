@@ -64,6 +64,33 @@ class ScraperTests(unittest.TestCase):
         env['fetch_radar_snapshot'] = Mock(side_effect=RuntimeError('network'))
         self.assertTrue(env['scrape_once'](('70km',)))
 
+    def test_exact_gap_fetch_does_not_accept_older_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env, requests = radar_functions(directory)
+            path = Path(directory) / '70km/png/202609101155.png'
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b'existing')
+            requests.get.return_value = types.SimpleNamespace(status_code=404, raise_for_status=Mock(side_effect=RuntimeError('404')))
+            with self.assertRaises(RuntimeError):
+                env['fetch_radar_snapshot']('70km', 202609101200, allow_fallback=False)
+            self.assertEqual(requests.get.call_count, 1)
+
+    def test_recent_gaps_recovered_and_announced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env, _ = radar_functions(directory)
+            fetch = Mock(side_effect=[(202609101200,None,False), (202609101155,None,False), (202609101150,None,False)])
+            env['fetch_radar_snapshot'] = fetch
+            ready = queue.Queue()
+            self.assertFalse(env['scrape_once'](('70km',), ready))
+            self.assertEqual([ready.get_nowait() for _ in range(3)], [202609101200,202609101155,202609101150])
+            self.assertEqual(fetch.call_args_list[1].kwargs, {'allow_fallback':False})
+
+    def test_unavailable_gap_keeps_fast_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env, _ = radar_functions(directory)
+            env['fetch_radar_snapshot'] = Mock(side_effect=[(202609101200,None,False), RuntimeError('404'), RuntimeError('404')])
+            self.assertTrue(env['scrape_once'](('70km',)))
+
     def test_either_arrival_order_builds_once(self):
         for order in [('radar', 'weather'), ('weather', 'radar')]:
             with self.subTest(order=order):
