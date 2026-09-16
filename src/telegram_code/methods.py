@@ -36,7 +36,6 @@ from telegram_code.notification_text import alert_text, rain_notice
 from telegram_code.local_rain import local_rain, in_coverage
 from telegram_code.rain_state import ENDED
 from telegram_code.database import get_user_mode
-from telegram_code.heartbeat import send_pipeline_heartbeat
 
 
 def main_menu():
@@ -693,7 +692,6 @@ async def process_new_timestamp(
 
 async def check_model_queue(context, model, folder_path, norm_stats, model_ready_queue):
     pending = context.application.bot_data.setdefault("pending_model_ticks", set())
-    cycle_ok = True
     while True:
         try:
             pending.add(int(model_ready_queue.get_nowait()))
@@ -703,23 +701,14 @@ async def check_model_queue(context, model, folder_path, norm_stats, model_ready
         result = await run_model(model, folder_path, norm_stats, tick=tick)
         if result is None:
             print(f"Model run failed for {tick}; retained for retry")
-            cycle_ok = False
             continue
-        updated = await send_auto_update(context, result)
+        await send_auto_update(context, result)
         pending.discard(tick)
         current = context.application.bot_data.get("latest_prediction")
         if current is None or result["observed_at"] > current["observed_at"]:
             context.application.bot_data["latest_prediction"] = result
-        if updated:
-            previous = context.application.bot_data.get('kuma_processed_observed_at')
-            if previous is None or result['observed_at'] > previous:
-                context.application.bot_data['kuma_processed_observed_at'] = result['observed_at']
-        else:
-            cycle_ok = False
     # Retry durable notifications even when there are no newly arrived radar frames.
     await deliver_notifications(context, reply_markup=main_menu())
-    if cycle_ok:
-        await send_pipeline_heartbeat(context.application.bot_data)
 
 
 async def send_auto_update(context, latest_prediction):

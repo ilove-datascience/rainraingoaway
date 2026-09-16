@@ -165,13 +165,15 @@ KUMA_PUSH_URL=https://YOUR_KUMA_HOST/api/push/YOUR_SECRET_TOKEN
 ```
 
 Keep any query parameters supplied by Kuma. Leaving the URL unset disables monitoring.
-The bot sends at most one heartbeat per minute after successful queue/database
-processing. It requires a successfully processed radar observation less than
-15 minutes old, allowing normal radar publication delays. Failed inference or
-database operations suppress the heartbeat for that cycle. Stalled radar eventually
-stops heartbeats; repeated old frames cannot extend this window. Forecast display
-and alert freshness remain governed by the original five-minute forecast window.
-This monitor does not guarantee that every Telegram notification was delivered.
+The bot sends a heartbeat every 30 seconds from its Telegram event loop,
+independently of radar availability, predictions, and database operations. The
+first attempt is scheduled one second after the job scheduler starts. Use a
+60-second Kuma interval with 2–3 retries to allow for network or scheduling delays.
+
+This is a **bot-liveness monitor**, not a forecast/data-health monitor. A stopped
+process, blocked event loop, or unreachable Kuma server can still cause downtime.
+An Up status does not guarantee fresh radar, successful database operations, or
+Telegram notification delivery. Forecast freshness rules are unchanged.
 
 Push requests run outside the Telegram event loop, have a five-second timeout,
 and do not stop the bot if Kuma is unreachable. The push URL is a secret; do not

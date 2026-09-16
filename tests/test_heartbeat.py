@@ -34,25 +34,19 @@ async def test_push_and_timeout_failure(caplog):
         assert url not in caplog.text
 
 
+def test_schedule_independent_job_and_disabled_configuration():
+    queue = MagicMock()
+    with patch.dict('os.environ', {'KUMA_PUSH_URL': ''}):
+        heartbeat.schedule_heartbeat(queue)
+        queue.run_repeating.assert_not_called()
+    with patch.dict('os.environ', {'KUMA_PUSH_URL': 'http://kuma/api/push/secret'}):
+        heartbeat.schedule_heartbeat(queue)
+    queue.run_repeating.assert_called_once_with(heartbeat.heartbeat_job,
+        interval=30, first=1, name='kuma-bot-heartbeat')
+
+
 @pytest.mark.asyncio
-async def test_delayed_frame_regular_push_and_stale_cutoff():
-    now = datetime(2026, 9, 16, 1, 50, 7)
-    state = {'kuma_processed_observed_at': datetime(2026, 9, 16, 1, 45)}
-    with patch.object(heartbeat, 'sg_now', return_value=now) as clock, \
-         patch.object(heartbeat.time, 'monotonic', return_value=100) as mono, \
-         patch.object(heartbeat, 'send_heartbeat', new_callable=AsyncMock, return_value=True) as push:
-        await heartbeat.send_pipeline_heartbeat(state)
+async def test_job_needs_no_radar_prediction_or_database_state():
+    with patch.object(heartbeat, 'send_heartbeat', new_callable=AsyncMock) as push:
+        await heartbeat.heartbeat_job(None)
         push.assert_awaited_once()
-        mono.return_value = 130
-        await heartbeat.send_pipeline_heartbeat(state)
-        push.assert_awaited_once()
-        mono.return_value = 160
-        await heartbeat.send_pipeline_heartbeat(state)
-        assert push.await_count == 2
-        mono.return_value = 1000
-        clock.return_value = datetime(2026, 9, 16, 2, 0)
-        await heartbeat.send_pipeline_heartbeat(state)
-        assert push.await_count == 2
-        await heartbeat.send_pipeline_heartbeat({})
-        await heartbeat.send_pipeline_heartbeat({'kuma_processed_observed_at': clock.return_value + timedelta(minutes=1)})
-        assert push.await_count == 2

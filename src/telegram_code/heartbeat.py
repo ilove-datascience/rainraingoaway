@@ -1,10 +1,7 @@
-"""Optional Uptime Kuma push notification for a successful forecast cycle."""
+"""Optional Uptime Kuma heartbeat for the running Telegram event loop."""
 import asyncio
 import logging
 import os
-import time
-from datetime import timedelta
-from telegram_code.forecast_policy import sg_now
 
 import requests
 
@@ -30,14 +27,13 @@ async def send_heartbeat():
     return False
 
 
-async def send_pipeline_heartbeat(bot_data):
-    """Allow source publication lag, but never report indefinitely stale work as healthy."""
-    observed = bot_data.get('kuma_processed_observed_at')
-    if observed is None or not timedelta(0) <= sg_now() - observed < timedelta(minutes=15):
-        return
-    now = time.monotonic()
-    last = bot_data.get('kuma_last_push')
-    if last is not None and now - last < 60:
-        return
-    if await send_heartbeat():
-        bot_data['kuma_last_push'] = now
+async def heartbeat_job(context):
+    """Runs on the bot event loop, independently of radar, inference and database jobs."""
+    await send_heartbeat()
+
+
+def schedule_heartbeat(job_queue):
+    if os.getenv('KUMA_PUSH_URL', '').strip():
+        job_queue.run_repeating(heartbeat_job, interval=30, first=1,
+                                name='kuma-bot-heartbeat')
+        logger.info('Kuma bot heartbeat enabled: every 30 seconds, independent of radar')

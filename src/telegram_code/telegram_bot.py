@@ -4,6 +4,7 @@ from functools import partial
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 from telegram.request import HTTPXRequest
 from telegram_code.cute_mode import CuteBot, cutemode
+from telegram_code.heartbeat import schedule_heartbeat
 
 try:
     from .methods import check_model_queue, handle_actual, handle_location, handle_msg, load_token, start
@@ -42,6 +43,8 @@ def run_bot(model, folder_path, model_ready_queue, norm_stats=None) -> None:
     # Hidden command: registered for typed input only, never added to keyboards/menu.
     app.add_handler(CommandHandler("cutemode", cutemode))
     app.add_handler(get_conversation_handler())
+
+    schedule_heartbeat(app.job_queue)
 
     app.job_queue.run_repeating(
         partial(
