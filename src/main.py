@@ -3,6 +3,10 @@ import queue
 import threading
 from pathlib import Path
 
+from runtime_logging import configure_logging
+
+configure_logging()
+
 import torch
 
 from data_processing.multimodal_radar_dataset import radar_dataset_multimodal

@@ -297,3 +297,13 @@ artifacts are ignored; already-tracked checkpoints remain tracked despite the
 Keep changes and tests grouped by topic. Do not commit credentials, private chat
 data, or generated caches. Include data and model prerequisites with evaluation
 instructions, and distinguish integration checks from forecasting-quality results.
+
+
+### Runtime logs
+
+Starting the bot with `python src/main.py` writes console output and Python logs
+into `logs/rainraingoaway.log` under the project directory. This includes radar,
+weather, model and scheduler messages, with timestamps, severity and thread names.
+The active file rotates at 10 MiB, keeping five backups (`.log.1` to `.log.5`).
+Logs append across restarts and the entire `logs/` directory is ignored by Git.
+Existing diagnostic output can contain user IDs and locations; review logs before sharing.
