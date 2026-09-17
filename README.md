@@ -115,13 +115,20 @@ loads the model, checks recent radar history, and starts Telegram polling. The
 prediction queue is checked every 30 seconds; radar frames follow five-minute
 ticks. Allow time for usable radar and weather inputs to arrive.
 
-In a private chat with the bot:
+In a private chat or group with the bot:
 
 - `/start`: register your location and choose an alert mode.
 - **My forecast**: request a forecast for your saved location.
 - **Current radar** or `/actual`: request the latest radar snapshot.
 - **Change location**: update your saved location.
 - **Alert settings** or `/setmode`: choose automatic or manual updates.
+
+Each chat has independent settings. A new group starts with `/start`, no saved
+location, and manual alerts; it never inherits a member's personal settings.
+Group members share the group's location, alert mode, and setup conversation.
+Automatic alerts go to the chat where they were enabled. Existing private-chat
+settings remain valid. The legacy `userid` database columns now store Telegram
+chat IDs and must support signed BIGINT values (group IDs are negative).
 
 Automatic mode sends an alert when rain is predicted, then updates when rain is
 predicted to end or radar shows it has ended. Manual mode pauses automatic alerts.
@@ -297,7 +304,6 @@ artifacts are ignored; already-tracked checkpoints remain tracked despite the
 Keep changes and tests grouped by topic. Do not commit credentials, private chat
 data, or generated caches. Include data and model prerequisites with evaluation
 instructions, and distinguish integration checks from forecasting-quality results.
-
 
 ### Runtime logs
 

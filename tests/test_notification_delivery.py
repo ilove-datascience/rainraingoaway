@@ -46,6 +46,12 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(finish.call_args.args[1], 'sent')
             self.assertEqual(finish.call_args.args[3], 42)
 
+    async def test_group_alert_targets_group_chat(self):
+        self.item['userid'] = -1001234567890
+        with patch.object(delivery, 'claim_notification', side_effect=[self.item, None]), patch.object(delivery, 'finish_notification'):
+            await delivery.deliver_notifications(self.context)
+        self.assertEqual(self.context.bot.send_message.await_args.kwargs['chat_id'], -1001234567890)
+
     async def test_photo_uses_persisted_image_and_caption(self):
         self.item['photo'] = b'original-image'
         received = []

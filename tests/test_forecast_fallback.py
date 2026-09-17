@@ -19,7 +19,7 @@ class ForecastFallbackTests(unittest.IsolatedAsyncioTestCase):
                         get_latest_radar_png=Mock(return_value=Path('202609111050.png')),
                         build_radar_snapshot_plot=Mock(return_value=(BytesIO(b'radar'), 'NO RAIN DETECTED | ACTUAL RADAR\nRadar observed: 11 Sep, 10:50 SGT')))
         exec(compile(ast.Module(body=nodes,type_ignores=[]),'fallback','exec'),self.env)
-        self.update=SimpleNamespace(effective_user=SimpleNamespace(id=1),message=SimpleNamespace(
+        self.update=SimpleNamespace(effective_user=SimpleNamespace(id=1),effective_chat=SimpleNamespace(id=1),message=SimpleNamespace(
             text='My forecast',location=SimpleNamespace(latitude=1.32,longitude=103.85),
             reply_text=AsyncMock(),reply_photo=AsyncMock()))
         self.context=SimpleNamespace(application=SimpleNamespace(bot_data={}))

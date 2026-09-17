@@ -186,7 +186,7 @@ def load_token(env_key: str = "tele_api_key") -> str:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    userid = update.effective_user.id
+    userid = update.effective_chat.id
     location = await asyncio.to_thread(get_location, userid)
     if location:
         await update.message.reply_text("Welcome back. Choose a forecast or update your settings.", reply_markup=main_menu())
@@ -205,7 +205,7 @@ async def receive_location(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    userid = update.effective_user.id
+    userid = update.effective_chat.id
     location = update.message.location
 
     latitude = location.latitude
@@ -240,7 +240,7 @@ async def receive_location(
     return WAITING_FOR_MODE
 
 async def update_mode(update, context):
-    userid = update.effective_user.id
+    userid = update.effective_chat.id
     current_mode = await asyncio.to_thread(get_user_mode, userid)
     if current_mode is None:
         await update.message.reply_text("Use /start to set up your location first.")
@@ -260,7 +260,7 @@ async def update_mode(update, context):
 
     return WAITING_FOR_MODE
 async def receive_mode(update, context):
-    userid = update.effective_user.id
+    userid = update.effective_chat.id
     choice = update.message.text
 
     if choice == "1 - Automatic rain updates":
@@ -300,7 +300,7 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
     if update.message.text != "My forecast":
         await update.message.reply_text("Choose an option below, or share a location for a forecast.", reply_markup=main_menu())
         return
-    location = await asyncio.to_thread(get_location, update.effective_user.id)
+    location = await asyncio.to_thread(get_location, update.effective_chat.id)
     if not location:
         await update.message.reply_text("Use /start to save your location first.", reply_markup=main_menu())
         return
@@ -600,7 +600,7 @@ async def handle_actual(
         await update.message.reply_text("No radar images available yet.")
         return
 
-    location = await asyncio.to_thread(get_location, update.effective_user.id)
+    location = await asyncio.to_thread(get_location, update.effective_chat.id)
     try:
         plot_buffer, caption = await asyncio.to_thread(build_radar_snapshot_plot, latest_png, location)
     except (OSError, ValueError) as exc:

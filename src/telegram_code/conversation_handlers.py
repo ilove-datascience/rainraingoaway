@@ -7,6 +7,7 @@ from telegram_code.states import WAITING_FOR_LOCATION, WAITING_FOR_MODE
 
 def get_conversation_handler():
     return ConversationHandler(
+        per_user=False,  # One shared setup conversation per chat.
         entry_points=[
             CommandHandler("start", start),
             MessageHandler(filters.Regex("^Change location$"), change_location),
@@ -27,6 +28,7 @@ def get_conversation_handler():
     
 def get_conversation_handler2():
     return ConversationHandler (
+            per_user=False,
             entry_points= [CommandHandler("setmode", update_mode),
                            MessageHandler(filters.Regex("^Alert settings$"), update_mode)]
             ,
