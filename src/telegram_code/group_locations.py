@@ -1,4 +1,4 @@
-"""Named extra locations for groups; location 0 remains the existing Main location."""
+"""Named extra locations for private and group chats; location 0 remains the existing Main location."""
 import asyncio
 import secrets
 from telegram import ForceReply, ReplyKeyboardRemove
@@ -7,7 +7,7 @@ from telegram_code.database import _get_db_connection
 from telegram_code.local_rain import in_coverage
 from telegram_code.notification_delivery import settings_lock
 
-MAX_GROUP_LOCATIONS = 6
+MAX_CHAT_LOCATIONS = 6
 
 WAITING_FOR_EXTRA_LOCATION = 3
 WAITING_FOR_LOCATION_NAME = 4
@@ -28,8 +28,6 @@ def list_locations(chat_id):
 
 
 def add_named_location(chat_id, label, latitude, longitude):
-    if chat_id >= 0:
-        raise ValueError('Multiple locations are available in groups only.')
     conn = _get_db_connection()
     try:
         cur = conn.cursor()
@@ -41,7 +39,7 @@ def add_named_location(chat_id, label, latitude, longitude):
             if cur.fetchone():
                 return False
             cur.execute('SELECT COUNT(*) FROM user_location WHERE userid=%s', (chat_id,))
-            if cur.fetchone()[0] >= MAX_GROUP_LOCATIONS:
+            if cur.fetchone()[0] >= MAX_CHAT_LOCATIONS:
                 return False
             # IDs are never deliberately reused, so old queued events cannot match a re-added location.
             cur.execute('INSERT INTO user_location (userid,location_id,label,latitude,longitude) VALUES (%s,%s,%s,%s,%s)',
@@ -55,8 +53,6 @@ def add_named_location(chat_id, label, latitude, longitude):
 
 
 def remove_named_location(chat_id, label):
-    if chat_id >= 0:
-        return False
     conn = _get_db_connection()
     try:
         cur = conn.cursor()
@@ -83,18 +79,18 @@ async def add_location_command(update, context):
 
 
 async def begin_named_location(update, context, label):
-    if update.effective_chat.type not in ('group', 'supergroup'):
-        await update.message.reply_text('Multiple locations are available in groups only.', reply_markup=ReplyKeyboardRemove())
+    if update.effective_chat.type not in ('private', 'group', 'supergroup'):
+        await update.message.reply_text('Locations are available in private chats and groups.', reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     if not label or len(label) > 80:
         await update.message.reply_text('Use /addlocation followed by a name (up to 80 characters), for example /addlocation Office.', reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     rows = await asyncio.to_thread(list_locations, update.effective_chat.id)
     if not rows:
-        await update.message.reply_text('Use /start to set up the group’s Main location first.', reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text('Use /start to set up the Main location first.', reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    if len(rows) >= MAX_GROUP_LOCATIONS:
-        await update.message.reply_text('Groups can save up to 6 locations, including Main. Remove one before adding another.', reply_markup=ReplyKeyboardRemove())
+    if len(rows) >= MAX_CHAT_LOCATIONS:
+        await update.message.reply_text('Each chat can save up to 6 locations, including Main. Remove one before adding another.', reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     if any(row['label'].casefold() == label.casefold() for row in rows):
         await update.message.reply_text('That location name is already saved. Choose another name.', reply_markup=ReplyKeyboardRemove())
@@ -116,8 +112,8 @@ async def receive_extra_location(update, context):
     async with settings_lock(context):
         saved = await asyncio.to_thread(add_named_location, update.effective_chat.id, label, location.latitude, location.longitude)
     context.chat_data.pop('new_location_label', None)
-    await update.message.reply_text(f'Saved {label}. It uses this group’s alert setting. Tap My forecast for all saved locations.' if saved
-                                    else 'Could not add that location. Groups allow 6 locations including Main, with unique names. Check /locations.',
+    await update.message.reply_text(f'Saved {label}. It uses this chat’s alert setting. Tap My forecast for all saved locations.' if saved
+                                    else 'Could not add that location. Each chat allows 6 locations including Main, with unique names. Check /locations.',
                                     reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
@@ -130,7 +126,7 @@ async def locations_command(update, context):
     # Separate short messages avoid Telegram’s message length limit.
     for row in rows:
         await update.message.reply_text(f"{row['label']}: {row['latitude']}, {row['longitude']}", reply_markup=ReplyKeyboardRemove())
-    if update.effective_chat.type in ('group', 'supergroup'):
+    if update.effective_chat.type in ('private', 'group', 'supergroup'):
         await update.message.reply_text('Use /menu for Add location or Remove location. Change location updates Main.',
                                         reply_markup=ReplyKeyboardRemove())
 
@@ -157,15 +153,15 @@ async def cancel_location(update, context):
 
 
 async def add_location_button(update, context):
-    if update.effective_chat.type not in ('group', 'supergroup'):
-        await update.message.reply_text('Multiple locations are available in groups only.', reply_markup=ReplyKeyboardRemove())
+    if update.effective_chat.type not in ('private', 'group', 'supergroup'):
+        await update.message.reply_text('Locations are available in private chats and groups.', reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     rows = await asyncio.to_thread(list_locations, update.effective_chat.id)
     if not rows:
         await update.message.reply_text('Use /start to set up Main first.', reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    if len(rows) >= MAX_GROUP_LOCATIONS:
-        await update.message.reply_text('Groups can save up to 6 locations, including Main. Remove one first.', reply_markup=ReplyKeyboardRemove())
+    if len(rows) >= MAX_CHAT_LOCATIONS:
+        await update.message.reply_text('Each chat can save up to 6 locations, including Main. Remove one first.', reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     await update.message.reply_text('What should this location be called? Send a name, such as Office, or /cancel.',
                                     reply_markup=ForceReply())
@@ -178,8 +174,8 @@ async def receive_location_name(update, context):
 
 
 async def remove_location_button(update, context):
-    if update.effective_chat.type not in ('group', 'supergroup'):
-        await update.message.reply_text('Multiple locations are available in groups only.', reply_markup=ReplyKeyboardRemove())
+    if update.effective_chat.type not in ('private', 'group', 'supergroup'):
+        await update.message.reply_text('Locations are available in private chats and groups.', reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     rows = await asyncio.to_thread(list_locations, update.effective_chat.id)
     extras = [row for row in rows if row['location_id'] != 0]

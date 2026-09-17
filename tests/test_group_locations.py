@@ -25,7 +25,7 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         self.rows = [dict(location_id=0, label='Main', latitude=1.3, longitude=103.8),
                      dict(location_id=7, label='Office', latitude=1.35, longitude=103.9)]
         self.env = functions('src/telegram_code/group_locations.py', dict(
-            ReplyKeyboardRemove=lambda: "removed", asyncio=asyncio, ConversationHandler=SimpleNamespace(END=-1), MAX_GROUP_LOCATIONS=6, WAITING_FOR_EXTRA_LOCATION=3, WAITING_FOR_LOCATION_NAME=4, WAITING_FOR_REMOVAL_NAME=5,
+            ReplyKeyboardRemove=lambda: "removed", asyncio=asyncio, ConversationHandler=SimpleNamespace(END=-1), MAX_CHAT_LOCATIONS=6, WAITING_FOR_EXTRA_LOCATION=3, WAITING_FOR_LOCATION_NAME=4, WAITING_FOR_REMOVAL_NAME=5,
             ForceReply=lambda: None, main_menu=lambda *args: None,
             in_coverage=lambda *args: True, settings_lock=lambda ctx: asyncio.Lock()))
         self.env.update(list_locations=Mock(return_value=self.rows), add_named_location=Mock(return_value=True))
@@ -61,13 +61,13 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.env['receive_removal_name'](self.update, self.context), -1)
         self.env['remove_named_location'].assert_called_once_with(-1001, 'School')
 
-    def test_menu_buttons_only_in_groups(self):
+    def test_menu_buttons_in_private_and_group_chats(self):
         env = functions('src/telegram_code/menus.py', dict(ReplyKeyboardMarkup=lambda rows, **kwargs: rows))
         group = sum(env['main_menu'](-1001), [])
         private = sum(env['main_menu'](42), [])
         for label in ('Add location', 'Saved locations', 'Remove location'):
             self.assertIn(label, group)
-            self.assertNotIn(label, private)
+            self.assertIn(label, private)
 
     async def test_add_flow_keeps_name_and_chat(self):
         self.assertEqual(await self.env['add_location_command'](self.update, self.context), 3)
@@ -75,13 +75,26 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         self.env['add_named_location'].assert_called_once_with(-1001, 'School', 1.3, 103.8)
         self.assertNotIn('new_location_label', self.context.chat_data)
 
-    async def test_private_and_duplicate_names_rejected(self):
+    async def test_private_chat_supported_and_duplicate_names_rejected(self):
         self.update.effective_chat.type = 'private'
-        self.assertEqual(await self.env['add_location_command'](self.update, self.context), -1)
+        self.update.effective_chat.id = 42
+        self.assertEqual(await self.env['add_location_command'](self.update, self.context), 3)
+        self.assertEqual(await self.env['receive_extra_location'](self.update, self.context), -1)
+        self.env['add_named_location'].assert_called_once_with(42, 'School', 1.3, 103.8)
         self.update.effective_chat.type = 'group'
         self.context.args = ['office']
         self.assertEqual(await self.env['add_location_command'](self.update, self.context), -1)
         self.assertNotIn('new_location_label', self.context.chat_data)
+
+    async def test_private_multiple_locations_route_to_combined_map(self):
+        self.update.effective_chat.id = 42
+        self.update.effective_chat.type = 'private'
+        self.update.message.text = 'My forecast'
+        combined = AsyncMock()
+        env = functions('src/telegram_code/methods.py', dict(asyncio=asyncio,
+            list_locations=lambda chat: self.rows, handle_group_forecasts=combined), {'handle_msg'})
+        await env['handle_msg'](self.update, self.context, None, '.')
+        combined.assert_awaited_once_with(self.update, self.context, None, '.', None)
 
     async def test_group_sends_one_image_and_closes_it(self):
         image = BytesIO(b'group-map')
@@ -148,7 +161,7 @@ class GroupDatabaseTests(unittest.TestCase):
         proxy = SimpleNamespace(cursor=self.conn.cursor, commit=self.conn.commit,
                                 rollback=self.conn.rollback, close=lambda: None,
                                 is_connected=self.conn.is_connected)
-        self.env = dict(_get_db_connection=lambda: proxy, secrets=secrets, MAX_GROUP_LOCATIONS=6)
+        self.env = dict(_get_db_connection=lambda: proxy, secrets=secrets, MAX_CHAT_LOCATIONS=6)
         functions('src/telegram_code/rain_state_db.py', self.env)
         self.env['ensure_rain_state_schema']()
         self.env['ensure_rain_state_schema']()  # Re-running migration must be safe.
@@ -175,13 +188,21 @@ class GroupDatabaseTests(unittest.TestCase):
         self.env['remove_named_location'](-1001, 'Place 0')
         self.assertTrue(self.env['add_named_location'](-1001, 'Replacement', 1.35, 103.9))
 
+    def test_private_cap_and_group_settings_remain_separate(self):
+        for index in range(5):
+            self.assertTrue(self.env['add_named_location'](42, f'Personal {index}', 1.35, 103.9))
+        self.assertFalse(self.env['add_named_location'](42, 'Seventh', 1.35, 103.9))
+        self.assertEqual(len(self.env['list_locations'](42)), 6)
+        self.assertEqual(len(self.env['list_locations'](-1001)), 1)
+
     def test_add_remove_and_chat_isolation(self):
         add = self.env['add_named_location']
         self.assertTrue(add(-1001, 'Office', 1.35, 103.9))
         self.assertFalse(add(-1001, 'office', 1.36, 103.9))
         self.assertTrue(add(-1002, 'Office', 1.36, 103.9))
-        with self.assertRaises(ValueError):
-            add(42, 'Office', 1.35, 103.9)
+        self.assertTrue(add(42, 'Office', 1.35, 103.9))
+        self.assertEqual(len(self.env['list_locations'](42)), 2)
+        self.assertTrue(self.env['remove_named_location'](42, 'Office'))
         self.assertEqual(len(self.env['list_locations'](-1001)), 2)
         self.assertTrue(self.env['remove_named_location'](-1001, 'Office'))
         self.assertEqual(len(self.env['list_locations'](-1001)), 1)

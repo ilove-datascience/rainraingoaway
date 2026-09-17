@@ -136,7 +136,7 @@ Automatic alerts go to the chat where they were enabled. Existing private-chat
 settings remain valid. The legacy `userid` database columns now store Telegram
 chat IDs and must support signed BIGINT values (group IDs are negative).
 
-Groups have **Add location**, **Saved locations**, and **Remove location** buttons.
+Private chats and groups have **Add location**, **Saved locations**, and **Remove location** buttons.
 Add and Remove prompt for a name; Add then asks for a Telegram location.
 Buttons clear after completed actions or cancellation. Use `/menu` to bring them
 back. Automatic alerts do not open the menu. The equivalent commands also work:
@@ -148,9 +148,9 @@ back. Automatic alerts do not open the menu. The equivalent commands also work:
 
 The initial location is **Main**. **Change location** updates Main; **Current radar**
 shows its marker. Main stays saved and can be changed rather than removed.
-Groups can save up to **6 locations, including Main**. Remove an extra location before adding a seventh. Names must be unique within a group (up to 80 characters). Automatic alerts include
+Each private chat or group can save up to **6 locations, including Main**. Remove an extra location before adding a seventh. Names must be unique within a group (up to 80 characters). Automatic alerts include
 location names and track rain independently at each location; **Alert settings**
-applies to the whole group. Private chats continue to have one saved location.
+applies to the whole group. Private chats use the same location controls and combined maps. Personal locations remain separate from group locations.
 
 Before running this version, rerun `python -m telegram_code.rain_state_db` with
 `PYTHONPATH=src`. This preserves existing locations as Main and old queued alerts,

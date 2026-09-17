@@ -298,7 +298,7 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
     if update.message.text != "My forecast":
         await update.message.reply_text("Use /menu to choose an option, or share a location for a forecast.", reply_markup=ReplyKeyboardRemove())
         return
-    if update.effective_chat.id < 0:
+    if update.effective_chat.id < 0 or len(await asyncio.to_thread(list_locations, update.effective_chat.id)) > 1:
         await handle_group_forecasts(update, context, model, folder_path, norm_stats)
         return
     location = await asyncio.to_thread(get_location, update.effective_chat.id)
@@ -773,8 +773,7 @@ async def send_auto_update(context, latest_prediction):
                 is_actual = result['reason'] == ENDED
                 value = observed if is_actual else forecast
                 message = alert_text(result["reason"], result["rain_observed_at"], result["rain_forecast_at"], radius, value)
-                if row['userid'] < 0:
-                    message = f"{row.get('label', 'Main')}\n{message}"
+                message = f"{row.get('label', 'Main')}\n{message}"
                 image_grid = actual if is_actual else grid
                 image_time = result['rain_observed_at'] if is_actual else result['rain_forecast_at']
                 source = 'Actual radar' if is_actual else 'Forecast radar (+5 min)'
@@ -841,10 +840,10 @@ def build_group_actual(rows, path):
 async def handle_group_forecasts(update, context, model, folder_path, norm_stats=None):
     rows = await asyncio.to_thread(list_locations, update.effective_chat.id)
     if not rows:
-        await update.message.reply_text('Use /start to save the group Main location first.', reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text('Use /start to save your Main location first.', reply_markup=ReplyKeyboardRemove())
         return
     if len(rows) > 6:
-        await update.message.reply_text('This group has more than 6 locations. Use /removelocation to reduce it to 6 before requesting a map.', reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text('This chat has more than 6 locations. Use /removelocation to reduce it to 6 before requesting a map.', reply_markup=ReplyKeyboardRemove())
         return
     prediction = context.application.bot_data.get('latest_prediction')
     if not is_fresh(prediction):
