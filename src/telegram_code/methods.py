@@ -33,7 +33,7 @@ from telegram_code.forecast_policy import is_fresh, forecast_text, sg_now
 from telegram_code.rain_state import next_rain_state, should_notify
 from telegram_code.rain_state_db import get_rain_locations, save_rain_state
 from telegram_code.notification_delivery import deliver_notifications, settings_lock
-from telegram_code.notification_text import alert_text, rain_notice
+from telegram_code.notification_text import alert_text, rain_notice, intensity_label
 from telegram_code.local_rain import local_rain, in_coverage
 from telegram_code.rain_state import ENDED
 from telegram_code.database import get_user_mode
@@ -491,7 +491,7 @@ def _render_heatmap(grid, title, colorbar_label, marker=None):
     sg_base_img = np.flipud(plt.imread(
         str(Path(__file__).resolve().parents[2] / "sgbaseimg_70km.png")))
     background, ink, muted = "#f3f6fa", "#172b46", "#61738b"
-    fig = plt.figure(figsize=(8, 7), dpi=160, facecolor=background)
+    fig = plt.figure(figsize=(8, 8) if isinstance(marker, list) else (8, 7), dpi=160, facecolor=background)
     try:
         heading, separator, timestamp = title.partition(" | ")
         fig.text(0.07, 0.95, "RAINRAINGOAWAY  /  SINGAPORE", fontsize=10,
@@ -499,7 +499,8 @@ def _render_heatmap(grid, title, colorbar_label, marker=None):
         fig.text(0.07, 0.905, heading, fontsize=21, weight="bold", color=ink)
         if separator:
             fig.text(0.07, 0.872, timestamp, fontsize=11, color=muted)
-        ax = fig.add_axes([0.055, 0.19, 0.89, 0.64])
+        ax = fig.add_axes([0.055, 0.34 if isinstance(marker, list) else 0.19, 0.89,
+                           0.49 if isinstance(marker, list) else 0.64])
         ax.set_facecolor("white")
         ax.imshow(sg_base_img, origin="lower",
                   extent=[0, grid.shape[1] - 1, 0, grid.shape[0] - 1], zorder=0)
@@ -507,7 +508,24 @@ def _render_heatmap(grid, title, colorbar_label, marker=None):
                        alpha=np.where(grid < 0.003, 0.0, 0.78),
                        norm=PowerNorm(gamma=0.6, vmin=0.0, vmax=1.0),
                        interpolation="nearest", aspect="equal", zorder=1)
-        if marker is not None:
+        # Preserve the source map proportions even if the model grid is resized.
+        ax.set_aspect((sg_base_img.shape[0] / sg_base_img.shape[1]) *
+                      ((grid.shape[1] - 1) / (grid.shape[0] - 1)))
+        if isinstance(marker, list):
+            fig.text(0.07, 0.29, 'SAVED LOCATIONS', fontsize=10, weight='bold', color=ink)
+            fig.text(0.07, 0.265, 'Coloured dots identify places only.', fontsize=10, color=muted)
+            from matplotlib.lines import Line2D
+            fig.add_artist(Line2D([0.07, 0.93], [0.16, 0.16], transform=fig.transFigure,
+                                  color='#cbd5e1', linewidth=1))
+            for index, (label, colour, (pixel_x, pixel_y)) in enumerate(marker):
+                ax.scatter(pixel_x, pixel_y, c=colour, s=95,
+                           edgecolors="white", linewidths=1.8, zorder=4)
+                column, row = index % 3, index // 3
+                x, y = 0.07 + column * 0.30, 0.225 - row * 0.035
+                fig.text(x, y, "●", color=colour, fontsize=14)
+                short_label = label if len(label) <= 24 else label[:23] + '…'
+                fig.text(x + 0.025, y, short_label, fontsize=10, color=ink)
+        elif marker is not None:
             pixel_x, pixel_y = marker
             ax.scatter(pixel_x, pixel_y, c="#f0529c", s=230, alpha=0.2,
                        edgecolors="none", zorder=3)
@@ -526,7 +544,8 @@ def _render_heatmap(grid, title, colorbar_label, marker=None):
         cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
         cbar.outline.set_visible(False)
         cbar.ax.tick_params(labelsize=9, colors=muted, length=0, pad=6)
-        fig.text(0.07, 0.125, colorbar_label, fontsize=10, color=ink)
+        fig.text(0.07, 0.125, 'RAIN INTENSITY · shaded map colours' if isinstance(marker, list) else colorbar_label,
+                 fontsize=10, color=ink, weight='bold' if isinstance(marker, list) else 'normal')
         fig.text(0.93, 0.125, "LOW → HIGH", fontsize=9, color=muted, ha="right")
         plot_buffer = BytesIO()
         fig.savefig(plot_buffer, format="png", facecolor=background)
@@ -773,30 +792,72 @@ async def send_auto_update(context, latest_prediction):
     return True
 
 
+def build_group_map(rows, grid, timestamp, actual=False):
+    markers, lines = [], []
+    colours = ("#e83288", "#0072b2", "#009e73", "#e69f00", "#7b3294", "#333333")
+    for index, row in enumerate(rows):
+        latitude, longitude = float(row['latitude']), float(row['longitude'])
+        label = ' '.join(row['label'].split())
+        if not in_coverage(latitude, longitude):
+            lines.append(f'{label}: outside coverage')
+            continue
+        value, point, _ = local_rain(grid, latitude, longitude)
+        markers.append((label, colours[index % len(colours)], point))
+        raining = value > 0.01 if actual else value >= 0.003
+        status = ('Rain detected' if raining else 'No rain detected') if actual else ('Rain expected' if raining else 'No rain expected')
+        if raining:
+            intensity = source_category(value) if actual else intensity_label(value)
+            status += f' — {intensity.lower()} (radar scale)'
+        lines.append(f'{label}: {status}')
+    heading = 'Actual radar' if actual else 'Forecast (+5 min)'
+    caption = f'{heading} | {timestamp:%d %b, %H:%M} SGT\n' + '\n'.join(lines)
+    image = render_heatmap(grid, f'{heading} | {timestamp:%d %b %H:%M} SGT',
+                           'Radar intensity' if actual else 'Prediction intensity', marker=markers)
+    return image, caption
+
+
+async def send_group_actual(update, folder_path, rows):
+    latest = await asyncio.to_thread(get_latest_radar_png, folder_path)
+    if latest is None:
+        await update.message.reply_text('Forecast delayed. No radar image available yet.', reply_markup=ReplyKeyboardRemove())
+        return
+    try:
+        image, caption = await asyncio.to_thread(build_group_actual, rows, latest)
+    except (OSError, ValueError):
+        await update.message.reply_text('Forecast delayed. Radar image unavailable; try again shortly.', reply_markup=ReplyKeyboardRemove())
+        return
+    try:
+        await update.message.reply_photo(photo=image, caption='Forecast delayed — showing observations\n'+caption,
+                                         reply_markup=ReplyKeyboardRemove())
+    finally:
+        image.close()
+
+
+def build_group_actual(rows, path):
+    grid = np.flipud(remove_small_echoes(decode_png(path, SOURCE)))
+    return build_group_map(rows, grid, datetime.strptime(path.stem, '%Y%m%d%H%M'), actual=True)
+
+
 async def handle_group_forecasts(update, context, model, folder_path, norm_stats=None):
     rows = await asyncio.to_thread(list_locations, update.effective_chat.id)
     if not rows:
         await update.message.reply_text('Use /start to save the group Main location first.', reply_markup=ReplyKeyboardRemove())
         return
+    if len(rows) > 6:
+        await update.message.reply_text('This group has more than 6 locations. Use /removelocation to reduce it to 6 before requesting a map.', reply_markup=ReplyKeyboardRemove())
+        return
     prediction = context.application.bot_data.get('latest_prediction')
     if not is_fresh(prediction):
         prediction = await run_model(model, folder_path, norm_stats)
-    if is_fresh(prediction):
-        context.application.bot_data['latest_prediction'] = prediction
-    for row in rows:
-        location = (float(row['latitude']), float(row['longitude']))
-        await update.message.reply_text(row['label'], reply_markup=ReplyKeyboardRemove())
-        if not in_coverage(*location):
-            await update.message.reply_text('This saved location is outside radar coverage.', reply_markup=ReplyKeyboardRemove())
-            continue
-        if not is_fresh(prediction):
-            await send_actual_fallback(update, folder_path, location)
-            continue
-        image, caption = await asyncio.to_thread(build_location_forecast, *location, prediction)
-        try:
-            if is_fresh(prediction):
-                await update.message.reply_photo(photo=image, caption=f"{row['label']}\n{caption}", reply_markup=ReplyKeyboardRemove())
-            else:
-                await send_actual_fallback(update, folder_path, location)
-        finally:
-            image.close()
+    if not is_fresh(prediction):
+        await send_group_actual(update, folder_path, rows)
+        return
+    context.application.bot_data['latest_prediction'] = prediction
+    image, caption = await asyncio.to_thread(build_group_map, rows, prediction['prediction'], prediction['next_tick'])
+    try:
+        if is_fresh(prediction):
+            await update.message.reply_photo(photo=image, caption=caption, reply_markup=ReplyKeyboardRemove())
+        else:
+            await send_group_actual(update, folder_path, rows)
+    finally:
+        image.close()

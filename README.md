@@ -144,11 +144,11 @@ back. Automatic alerts do not open the menu. The equivalent commands also work:
 - `/addlocation Office`: then share a Telegram location. Use `/cancel` to cancel.
 - `/locations`: list saved names and coordinates.
 - `/removelocation Office`: remove an extra location and cancel its pending alerts.
-- **My forecast**: show a labelled forecast for every saved location.
+- **My forecast**: show one map with colour-coded markers and a location legend below the map for all saved locations and a short rain-status line for each.
 
 The initial location is **Main**. **Change location** updates Main; **Current radar**
 shows its marker. Main stays saved and can be changed rather than removed.
-Names must be unique within a group (up to 80 characters). Automatic alerts include
+Groups can save up to **6 locations, including Main**. Remove an extra location before adding a seventh. Names must be unique within a group (up to 80 characters). Automatic alerts include
 location names and track rain independently at each location; **Alert settings**
 applies to the whole group. Private chats continue to have one saved location.
 

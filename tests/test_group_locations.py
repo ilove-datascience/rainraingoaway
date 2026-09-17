@@ -25,7 +25,7 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         self.rows = [dict(location_id=0, label='Main', latitude=1.3, longitude=103.8),
                      dict(location_id=7, label='Office', latitude=1.35, longitude=103.9)]
         self.env = functions('src/telegram_code/group_locations.py', dict(
-            ReplyKeyboardRemove=lambda: "removed", asyncio=asyncio, ConversationHandler=SimpleNamespace(END=-1), WAITING_FOR_EXTRA_LOCATION=3, WAITING_FOR_LOCATION_NAME=4, WAITING_FOR_REMOVAL_NAME=5,
+            ReplyKeyboardRemove=lambda: "removed", asyncio=asyncio, ConversationHandler=SimpleNamespace(END=-1), MAX_GROUP_LOCATIONS=6, WAITING_FOR_EXTRA_LOCATION=3, WAITING_FOR_LOCATION_NAME=4, WAITING_FOR_REMOVAL_NAME=5,
             ForceReply=lambda: None, main_menu=lambda *args: None,
             in_coverage=lambda *args: True, settings_lock=lambda ctx: asyncio.Lock()))
         self.env.update(list_locations=Mock(return_value=self.rows), add_named_location=Mock(return_value=True))
@@ -83,17 +83,46 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.env['add_location_command'](self.update, self.context), -1)
         self.assertNotIn('new_location_label', self.context.chat_data)
 
-    async def test_all_forecasts_labelled_and_images_closed(self):
-        images = [BytesIO(b'a'), BytesIO(b'b')]
-        env = functions('src/telegram_code/methods.py', dict(ReplyKeyboardRemove=lambda: "removed", asyncio=asyncio,
-            list_locations=lambda chat: self.rows, is_fresh=bool, main_menu=lambda *args: None,
-            in_coverage=lambda *args: True, build_location_forecast=Mock(side_effect=[(images[0], 'forecast'), (images[1], 'forecast')]),
-            run_model=AsyncMock(return_value={'fresh': True})), {'handle_group_forecasts'})
+    async def test_group_sends_one_image_and_closes_it(self):
+        image = BytesIO(b'group-map')
+        prediction = {'prediction': 'grid', 'next_tick': datetime(2026,9,17,12)}
+        env = functions('src/telegram_code/methods.py', dict(asyncio=asyncio,
+            ReplyKeyboardRemove=lambda: 'removed', list_locations=lambda chat: self.rows,
+            is_fresh=bool, build_group_map=Mock(return_value=(image, '1. Main: No rain expected\n2. Office: Rain expected')),
+            run_model=AsyncMock(return_value=prediction)), {'handle_group_forecasts'})
         await env['handle_group_forecasts'](self.update, self.context, None, '.')
-        captions = [call.kwargs['caption'] for call in self.update.message.reply_photo.await_args_list]
-        self.assertEqual(captions, ['Main\nforecast', 'Office\nforecast'])
-        self.assertTrue(all(image.closed for image in images))
-        env['run_model'].assert_awaited_once()
+        self.update.message.reply_photo.assert_awaited_once()
+        self.update.message.reply_text.assert_not_awaited()
+        self.assertTrue(image.closed)
+        env['build_group_map'].assert_called_once_with(self.rows, 'grid', prediction['next_tick'])
+
+    async def test_delayed_group_uses_one_combined_fallback(self):
+        fallback = AsyncMock()
+        env = functions('src/telegram_code/methods.py', dict(asyncio=asyncio,
+            ReplyKeyboardRemove=lambda: 'removed', list_locations=lambda chat: self.rows,
+            is_fresh=bool, run_model=AsyncMock(return_value=None), send_group_actual=fallback), {'handle_group_forecasts'})
+        await env['handle_group_forecasts'](self.update, self.context, None, '.')
+        fallback.assert_awaited_once_with(self.update, '.', self.rows)
+        self.update.message.reply_photo.assert_not_awaited()
+
+    def test_group_map_colours_locations_and_omits_area(self):
+        render = Mock(return_value=BytesIO(b'map'))
+        env = functions('src/telegram_code/methods.py', dict(
+            in_coverage=lambda *a: True, local_rain=Mock(side_effect=[(0,(1,2),3),(.5,(3,4),3)]),
+            render_heatmap=render, intensity_label=lambda value: 'Moderate'), {'build_group_map'})
+        _, caption = env['build_group_map'](self.rows, 'grid', datetime(2026,9,17,12))
+        self.assertEqual(render.call_args.kwargs['marker'], [('Main', '#e83288', (1,2)), ('Office', '#0072b2', (3,4))])
+        self.assertIn('Main: No rain expected', caption)
+        self.assertNotIn('1.', caption)
+        self.assertIn('Office: Rain expected — moderate (radar scale)', caption)
+        self.assertIn('Main: No rain expected\n', caption)
+        self.assertNotIn('Main: No rain expected —', caption)
+        self.assertNotIn('Area', caption)
+
+    async def test_cap_rejected_before_location_prompt(self):
+        self.env['list_locations'].return_value = self.rows * 3
+        self.assertEqual(await self.env['add_location_command'](self.update, self.context), -1)
+        self.assertIn('6 locations', self.update.message.reply_text.await_args.args[0])
 
 
 @unittest.skipUnless(os.getenv('TEST_MYSQL_GROUP_LOCATIONS') == '1', 'Opt-in MySQL temporary-table integration')
@@ -119,7 +148,7 @@ class GroupDatabaseTests(unittest.TestCase):
         proxy = SimpleNamespace(cursor=self.conn.cursor, commit=self.conn.commit,
                                 rollback=self.conn.rollback, close=lambda: None,
                                 is_connected=self.conn.is_connected)
-        self.env = dict(_get_db_connection=lambda: proxy, secrets=secrets)
+        self.env = dict(_get_db_connection=lambda: proxy, secrets=secrets, MAX_GROUP_LOCATIONS=6)
         functions('src/telegram_code/rain_state_db.py', self.env)
         self.env['ensure_rain_state_schema']()
         self.env['ensure_rain_state_schema']()  # Re-running migration must be safe.
@@ -137,6 +166,14 @@ class GroupDatabaseTests(unittest.TestCase):
 
     def tearDown(self):
         self.conn.close()  # MySQL automatically drops only this session's temporary tables.
+
+    def test_six_location_cap_includes_main_and_recovers_after_removal(self):
+        for index in range(5):
+            self.assertTrue(self.env['add_named_location'](-1001, f'Place {index}', 1.35, 103.9))
+        self.assertFalse(self.env['add_named_location'](-1001, 'Seventh', 1.35, 103.9))
+        self.assertEqual(len(self.env['list_locations'](-1001)), 6)
+        self.env['remove_named_location'](-1001, 'Place 0')
+        self.assertTrue(self.env['add_named_location'](-1001, 'Replacement', 1.35, 103.9))
 
     def test_add_remove_and_chat_isolation(self):
         add = self.env['add_named_location']
