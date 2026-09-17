@@ -46,6 +46,14 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(finish.call_args.args[1], 'sent')
             self.assertEqual(finish.call_args.args[3], 42)
 
+    async def test_alert_menu_is_selected_for_destination_chat(self):
+        self.item['userid'] = -1001234567890
+        menu = Mock(return_value='group-menu')
+        with patch.object(delivery, 'claim_notification', side_effect=[self.item, None]), patch.object(delivery, 'finish_notification'):
+            await delivery.deliver_notifications(self.context, reply_markup=menu)
+        menu.assert_called_once_with(-1001234567890)
+        self.assertEqual(self.context.bot.send_message.await_args.kwargs['reply_markup'], 'group-menu')
+
     async def test_group_alert_targets_group_chat(self):
         self.item['userid'] = -1001234567890
         with patch.object(delivery, 'claim_notification', side_effect=[self.item, None]), patch.object(delivery, 'finish_notification'):

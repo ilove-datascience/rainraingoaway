@@ -11,7 +11,7 @@ class ChatSettingsTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         source = Path(__file__).resolve().parents[1] / 'src/telegram_code/methods.py'
         tree = ast.parse(source.read_text(encoding='utf-8'))
-        names = {'start', 'receive_location', 'receive_mode', 'update_mode', 'handle_msg'}
+        names = {'start', 'receive_location', 'receive_mode', 'update_mode', 'handle_msg', 'handle_group_forecasts'}
         nodes = [n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name in names]
         self.locations = {42: (1.3, 103.8)}
         self.modes = {42: 'automatic'}
@@ -30,7 +30,7 @@ class ChatSettingsTests(unittest.IsolatedAsyncioTestCase):
                         get_location=self.locations.get, add_user=add_user,
                         add_location=add_location, save_mode_choice=save_mode,
                         get_user_mode=self.modes.get, in_coverage=lambda *a: True,
-                        main_menu=lambda: None, ReplyKeyboardMarkup=lambda **k: None,
+                        list_locations=lambda chat: [], main_menu=lambda *args: None, ReplyKeyboardMarkup=lambda **k: None,
                         settings_lock=lambda c: asyncio.Lock())
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), self.env)
         self.context = SimpleNamespace(application=SimpleNamespace(bot_data={}))

@@ -23,7 +23,7 @@ def claim_notification(now):
             if not item:
                 return None
             cur.execute('''SELECT u.mode,l.rain_settings_version FROM users u
-                JOIN user_location l ON l.userid=u.userid WHERE u.userid=%s''', (item['userid'],))
+                JOIN user_location l ON l.userid=u.userid WHERE u.userid=%s AND l.location_id=%s''', (item['userid'], item.get('location_id', 0)))
             user = cur.fetchone()
             expired = item['reason'] != ENDED and now >= item['forecast_at']
             eligible = user and user['mode'] == 'automatic' and user['rain_settings_version'] == item['settings_version']
@@ -32,8 +32,8 @@ def claim_notification(now):
             if expired and eligible:
                 # Expired, undelivered start must not suppress a later fresh start.
                 cur.execute('''UPDATE user_location SET rain_episode_reason=rain_alert_reason
-                    WHERE userid=%s AND rain_settings_version=%s AND rain_episode_reason=%s''',
-                    (item['userid'],item['settings_version'],item['reason']))
+                    WHERE userid=%s AND location_id=%s AND rain_settings_version=%s AND rain_episode_reason=%s''',
+                    (item['userid'],item.get('location_id', 0),item['settings_version'],item['reason']))
             conn.commit()
             return item if status == 'sending' else {'cancelled': True}
         finally:
@@ -52,8 +52,8 @@ def finish_notification(item, status, now, message_id=None, retry_seconds=0):
                 (status,message_id,now+timedelta(seconds=retry_seconds),item['id']))
             if status == 'sent':
                 cur.execute('''UPDATE user_location SET rain_alert_at=%s,rain_alert_reason=%s
-                    WHERE userid=%s AND rain_settings_version=%s''',
-                    (now,item['reason'],item['userid'],item['settings_version']))
+                    WHERE userid=%s AND location_id=%s AND rain_settings_version=%s''',
+                    (now,item['reason'],item['userid'],item.get('location_id', 0),item['settings_version']))
             conn.commit()
         finally:
             cur.close()
@@ -76,16 +76,17 @@ async def deliver_notifications(context, reply_markup=None):
             if item.get('cancelled'):
                 continue
             now = sg_now()
+            markup = reply_markup(item['userid']) if callable(reply_markup) else reply_markup
             try:
                 if item.get('photo'):
                     # The persisted PNG belongs to this event, not the latest model run.
                     with BytesIO(item['photo']) as photo:
                         photo.name = 'radar.png'
                         sent = await context.bot.send_photo(chat_id=item['userid'], photo=photo,
-                                                            caption=item['message'], reply_markup=reply_markup)
+                                                            caption=item['message'], reply_markup=markup)
                 else:
                     # Backward compatibility for text alerts queued before this migration.
-                    sent = await context.bot.send_message(chat_id=item['userid'], text=item['message'], reply_markup=reply_markup)
+                    sent = await context.bot.send_message(chat_id=item['userid'], text=item['message'], reply_markup=markup)
                 receipt = (item, 'sent', sg_now(), sent.message_id, 0)
             except RetryAfter as exc:
                 delay = exc.retry_after.total_seconds() if hasattr(exc.retry_after, 'total_seconds') else float(exc.retry_after)

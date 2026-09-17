@@ -230,7 +230,7 @@ def get_location(userid):
             """
             SELECT latitude, longitude
             FROM user_location
-            WHERE userid = %s
+            WHERE userid = %s AND location_id = 0
             """,
             (userid,)
         )

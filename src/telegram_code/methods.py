@@ -27,6 +27,8 @@ from data_processing.radar_codec import decode_png, SOURCE, source_category
 from masking import lat_long_to_pixel
 from scraping.rain_areas import SG_OFFSET_HOURS, attempt_get_most_recent, datetime_now_str, get_previous_ticks
 from telegram_code.database import add_location, add_user, get_autoupdate_users, get_location, save_mode_choice
+from telegram_code.group_locations import list_locations
+from telegram_code.menus import main_menu
 from telegram_code.states import WAITING_FOR_LOCATION, WAITING_FOR_MODE
 from telegram_code.forecast_policy import is_fresh, forecast_text, sg_now
 from telegram_code.rain_state import next_rain_state, should_notify
@@ -38,11 +40,6 @@ from telegram_code.rain_state import ENDED
 from telegram_code.database import get_user_mode
 
 
-def main_menu():
-    return ReplyKeyboardMarkup(
-        [["My forecast", "Current radar"], ["Change location", "Alert settings"]],
-        resize_keyboard=True,
-    )
 # Gated rain-prediction pipeline constants (mirror test_multimodal_convlstm.ipynb).
 # threshold=0.55 chosen as the best structural operating point from the validation-only
 # mask sweep: cleanest background/noise rejection with best large-component IoU among
@@ -187,9 +184,11 @@ def load_token(env_key: str = "tele_api_key") -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     userid = update.effective_chat.id
+    if userid < 0:
+        await update.message.reply_text('Group locations: /addlocation Name, /locations, /removelocation Name. My forecast checks all locations; Change location updates Main. Alert settings apply to all locations.')
     location = await asyncio.to_thread(get_location, userid)
     if location:
-        await update.message.reply_text("Welcome back. Choose a forecast or update your settings.", reply_markup=main_menu())
+        await update.message.reply_text("Welcome back. Choose a forecast or update your settings.", reply_markup=main_menu(update.effective_chat.id))
         return ConversationHandler.END
     await asyncio.to_thread(add_user, userid)
     await update.message.reply_text("Welcome! Send your Telegram location to set up local rain forecasts.")
@@ -284,7 +283,7 @@ async def receive_mode(update, context):
         message = ("Automatic alerts enabled: one when rain is predicted, then only when "
                    "rain is predicted to end or radar shows it has ended." if mode == "automatic"
                    else "Automatic alerts paused. Tap My forecast whenever you need an update.")
-        await update.message.reply_text(message, reply_markup=main_menu())
+        await update.message.reply_text(message, reply_markup=main_menu(update.effective_chat.id))
     else:
         await update.message.reply_text("Couldn't save your settings. Please try again.")
         return WAITING_FOR_MODE
@@ -298,14 +297,17 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
         await handle_actual(update, context, folder_path)
         return
     if update.message.text != "My forecast":
-        await update.message.reply_text("Choose an option below, or share a location for a forecast.", reply_markup=main_menu())
+        await update.message.reply_text("Choose an option below, or share a location for a forecast.", reply_markup=main_menu(update.effective_chat.id))
+        return
+    if update.effective_chat.id < 0:
+        await handle_group_forecasts(update, context, model, folder_path, norm_stats)
         return
     location = await asyncio.to_thread(get_location, update.effective_chat.id)
     if not location:
-        await update.message.reply_text("Use /start to save your location first.", reply_markup=main_menu())
+        await update.message.reply_text("Use /start to save your location first.", reply_markup=main_menu(update.effective_chat.id))
         return
     if not in_coverage(float(location[0]), float(location[1])):
-        await update.message.reply_text("Your saved location is outside radar coverage. Tap Change location.", reply_markup=main_menu())
+        await update.message.reply_text("Your saved location is outside radar coverage. Tap Change location.", reply_markup=main_menu(update.effective_chat.id))
         return
     prediction = context.application.bot_data.get("latest_prediction")
     if not is_fresh(prediction):
@@ -320,7 +322,7 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
         image.close()
         await send_actual_fallback(update, folder_path, location)
         return
-    await update.message.reply_photo(photo=image, caption=caption, reply_markup=main_menu())
+    await update.message.reply_photo(photo=image, caption=caption, reply_markup=main_menu(update.effective_chat.id))
 
 
 async def run_model(model, folder_path, norm_stats=None, tick=None):
@@ -434,7 +436,7 @@ async def handle_location(
     latitude = location.latitude
     longitude = location.longitude
     if not in_coverage(latitude, longitude):
-        await update.message.reply_text("That location is outside our radar coverage.", reply_markup=main_menu())
+        await update.message.reply_text("That location is outside our radar coverage.", reply_markup=main_menu(update.effective_chat.id))
         return
 
     latest_prediction = context.application.bot_data.get(
@@ -466,7 +468,7 @@ async def handle_location(
     await update.message.reply_photo(
         photo=plot_buffer,
         caption=caption,
-        reply_markup=main_menu(),
+        reply_markup=main_menu(update.effective_chat.id),
     )
 
 
@@ -570,7 +572,7 @@ async def send_actual_fallback(update, folder_path, location):
     if latest_png is None:
         await update.message.reply_text(
             "FORECAST DELAYED\n\nNo radar image is available yet. Please try again shortly.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(update.effective_chat.id),
         )
         return
     try:
@@ -579,12 +581,12 @@ async def send_actual_fallback(update, folder_path, location):
         print(f"Radar fallback unavailable: {exc}")
         await update.message.reply_text(
             "FORECAST DELAYED\n\nThe latest radar image could not be loaded. Please try again shortly.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(update.effective_chat.id),
         )
         return
     caption = "FORECAST DELAYED — SHOWING ACTUAL RADAR\n\n" + caption
     try:
-        await update.message.reply_photo(photo=image, caption=caption, reply_markup=main_menu())
+        await update.message.reply_photo(photo=image, caption=caption, reply_markup=main_menu(update.effective_chat.id))
     finally:
         image.close()
 
@@ -607,10 +609,10 @@ async def handle_actual(
         print(f"Actual radar unavailable: {exc}")
         await update.message.reply_text(
             "ACTUAL RADAR UNAVAILABLE\n\nThe latest radar image could not be decoded. Please try again shortly.",
-            reply_markup=main_menu())
+            reply_markup=main_menu(update.effective_chat.id))
         return
     try:
-        await update.message.reply_photo(photo=plot_buffer, caption=caption, reply_markup=main_menu())
+        await update.message.reply_photo(photo=plot_buffer, caption=caption, reply_markup=main_menu(update.effective_chat.id))
     finally:
         plot_buffer.close()
 
@@ -727,7 +729,7 @@ async def check_model_queue(context, model, folder_path, norm_stats, model_ready
         if current is None or result["observed_at"] > current["observed_at"]:
             context.application.bot_data["latest_prediction"] = result
     # Retry durable notifications even when there are no newly arrived radar frames.
-    await deliver_notifications(context, reply_markup=main_menu())
+    await deliver_notifications(context, reply_markup=main_menu)
 
 
 async def send_auto_update(context, latest_prediction):
@@ -753,6 +755,8 @@ async def send_auto_update(context, latest_prediction):
                 is_actual = result['reason'] == ENDED
                 value = observed if is_actual else forecast
                 message = alert_text(result["reason"], result["rain_observed_at"], result["rain_forecast_at"], radius, value)
+                if row['userid'] < 0:
+                    message = f"{row.get('label', 'Main')}\n{message}"
                 image_grid = actual if is_actual else grid
                 image_time = result['rain_observed_at'] if is_actual else result['rain_forecast_at']
                 source = 'Actual radar' if is_actual else 'Forecast radar (+5 min)'
@@ -768,3 +772,32 @@ async def send_auto_update(context, latest_prediction):
     if failed:
         raise RuntimeError("Some location states failed; keeping timestamp for retry")
     return True
+
+
+async def handle_group_forecasts(update, context, model, folder_path, norm_stats=None):
+    rows = await asyncio.to_thread(list_locations, update.effective_chat.id)
+    if not rows:
+        await update.message.reply_text('Use /start to save the group Main location first.', reply_markup=main_menu(update.effective_chat.id))
+        return
+    prediction = context.application.bot_data.get('latest_prediction')
+    if not is_fresh(prediction):
+        prediction = await run_model(model, folder_path, norm_stats)
+    if is_fresh(prediction):
+        context.application.bot_data['latest_prediction'] = prediction
+    for row in rows:
+        location = (float(row['latitude']), float(row['longitude']))
+        await update.message.reply_text(row['label'])
+        if not in_coverage(*location):
+            await update.message.reply_text('This saved location is outside radar coverage.')
+            continue
+        if not is_fresh(prediction):
+            await send_actual_fallback(update, folder_path, location)
+            continue
+        image, caption = await asyncio.to_thread(build_location_forecast, *location, prediction)
+        try:
+            if is_fresh(prediction):
+                await update.message.reply_photo(photo=image, caption=f"{row['label']}\n{caption}", reply_markup=main_menu(update.effective_chat.id))
+            else:
+                await send_actual_fallback(update, folder_path, location)
+        finally:
+            image.close()

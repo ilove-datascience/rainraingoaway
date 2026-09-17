@@ -13,7 +13,7 @@ class ForecastFallbackTests(unittest.IsolatedAsyncioTestCase):
         nodes = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name in
                  {'handle_msg', 'handle_location', 'send_actual_fallback'}]
         self.env = dict(asyncio=asyncio, Update=object, ContextTypes=SimpleNamespace(DEFAULT_TYPE=object),
-                        main_menu=lambda:None, get_location=Mock(return_value=(1.3,103.8)),
+                        main_menu=lambda *args:None, get_location=Mock(return_value=(1.3,103.8)),
                         in_coverage=lambda *a:True, is_fresh=lambda p:bool(p), run_model=AsyncMock(return_value=None),
                         build_location_forecast=Mock(return_value=(BytesIO(b'forecast'), 'Forecast')),
                         get_latest_radar_png=Mock(return_value=Path('202609111050.png')),

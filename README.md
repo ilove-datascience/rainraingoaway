@@ -125,10 +125,31 @@ In a private chat or group with the bot:
 
 Each chat has independent settings. A new group starts with `/start`, no saved
 location, and manual alerts; it never inherits a member's personal settings.
-Group members share the group's location, alert mode, and setup conversation.
+Group members share the group's saved locations, alert mode, and setup conversation.
 Automatic alerts go to the chat where they were enabled. Existing private-chat
 settings remain valid. The legacy `userid` database columns now store Telegram
 chat IDs and must support signed BIGINT values (group IDs are negative).
+
+Groups have **Add location**, **Saved locations**, and **Remove location** buttons.
+Add and Remove prompt for a name; Add then asks for a Telegram location.
+Use `/cancel` to return to the menu. The equivalent commands also work:
+
+- `/addlocation Office`: then share a Telegram location. Use `/cancel` to cancel.
+- `/locations`: list saved names and coordinates.
+- `/removelocation Office`: remove an extra location and cancel its pending alerts.
+- **My forecast**: show a labelled forecast for every saved location.
+
+The initial location is **Main**. **Change location** updates Main; **Current radar**
+shows its marker. Main stays saved and can be changed rather than removed.
+Names must be unique within a group (up to 80 characters). Automatic alerts include
+location names and track rain independently at each location; **Alert settings**
+applies to the whole group. Private chats continue to have one saved location.
+
+Before running this version, rerun `python -m telegram_code.rain_state_db` with
+`PYTHONPATH=src`. This preserves existing locations as Main and old queued alerts,
+adds location IDs and labels, and extends the location and notification keys.
+Do not run an older bot version once extra locations have been added.
+
 
 Automatic mode sends an alert when rain is predicted, then updates when rain is
 predicted to end or radar shows it has ended. Manual mode pauses automatic alerts.
