@@ -23,7 +23,7 @@ class ChatSettingsTests(unittest.IsolatedAsyncioTestCase):
         def save_mode(chat, mode):
             self.modes[chat] = mode
             return True
-        self.env = dict(asyncio=asyncio, Update=object,
+        self.env = dict(ReplyKeyboardRemove=lambda: "removed", asyncio=asyncio, Update=object,
                         ContextTypes=SimpleNamespace(DEFAULT_TYPE=object),
                         ConversationHandler=SimpleNamespace(END=-1),
                         WAITING_FOR_LOCATION=1, WAITING_FOR_MODE=2,

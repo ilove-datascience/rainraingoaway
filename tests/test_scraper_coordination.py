@@ -30,6 +30,39 @@ def radar_functions(data_dir):
 
 
 class ScraperTests(unittest.TestCase):
+    def test_240km_download_uses_archive_endpoint_and_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env, requests = radar_functions(directory)
+            requests.get.return_value = types.SimpleNamespace(status_code=200, raise_for_status=Mock(), content=b'radar240')
+            _, path, fallback = env['fetch_radar_snapshot']('240km', 202609101200)
+            self.assertEqual(path, Path(directory) / '240km/png/202609101200.png')
+            self.assertEqual(path.read_bytes(), b'radar240')
+            self.assertIn('/240km/dpsri_240km_', requests.get.call_args.args[0])
+            self.assertFalse(fallback)
+
+    def test_240km_does_not_enqueue_model_frames(self):
+        env, _ = radar_functions('.')
+        env['fetch_radar_snapshot'] = Mock(return_value=(202609101200, None, False))
+        ready = queue.Queue()
+        self.assertFalse(env['scrape_once'](('240km',), ready))
+        self.assertTrue(ready.empty())
+
+    def test_startup_uses_independent_radar_workers(self):
+        tree = ast.parse((ROOT / 'src/main.py').read_text(encoding='utf-8'))
+        node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main')
+        thread = Mock()
+        scrape = Mock()
+        env = dict(datetime_now_str=lambda **kw: 202609101200, SG_OFFSET_HOURS=8,
+                   queue=queue, threading=types.SimpleNamespace(Thread=thread),
+                   run_frame_cache_worker=Mock(), run_scraper_forever=scrape,
+                   run_weather_scraper_forever=Mock(), ensure_normalization_stats=Mock(),
+                   load_model=Mock(), check_history=Mock(return_value=True), run_bot=Mock(), DATA_PATH='70km')
+        exec(compile(ast.Module(body=[node], type_ignores=[]), 'startup', 'exec'), env)
+        env['main']()
+        radars = [c.kwargs for c in thread.call_args_list if c.kwargs['target'] is scrape]
+        self.assertEqual([c['kwargs']['img_names'] for c in radars], [('70km',), ('240km',)])
+        self.assertTrue(all(c['daemon'] for c in radars))
+
     def test_cached_current_makes_no_request(self):
         with tempfile.TemporaryDirectory() as directory:
             env, requests = radar_functions(directory)

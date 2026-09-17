@@ -28,7 +28,6 @@ from masking import lat_long_to_pixel
 from scraping.rain_areas import SG_OFFSET_HOURS, attempt_get_most_recent, datetime_now_str, get_previous_ticks
 from telegram_code.database import add_location, add_user, get_autoupdate_users, get_location, save_mode_choice
 from telegram_code.group_locations import list_locations
-from telegram_code.menus import main_menu
 from telegram_code.states import WAITING_FOR_LOCATION, WAITING_FOR_MODE
 from telegram_code.forecast_policy import is_fresh, forecast_text, sg_now
 from telegram_code.rain_state import next_rain_state, should_notify
@@ -185,18 +184,18 @@ def load_token(env_key: str = "tele_api_key") -> str:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     userid = update.effective_chat.id
     if userid < 0:
-        await update.message.reply_text('Group locations: /addlocation Name, /locations, /removelocation Name. My forecast checks all locations; Change location updates Main. Alert settings apply to all locations.')
+        await update.message.reply_text('Group locations: /addlocation Name, /locations, /removelocation Name. My forecast checks all locations; Change location updates Main. Alert settings apply to all locations.', reply_markup=ReplyKeyboardRemove())
     location = await asyncio.to_thread(get_location, userid)
     if location:
-        await update.message.reply_text("Welcome back. Choose a forecast or update your settings.", reply_markup=main_menu(update.effective_chat.id))
+        await update.message.reply_text("Welcome back. Use /menu for forecasts and settings.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
     await asyncio.to_thread(add_user, userid)
-    await update.message.reply_text("Welcome! Send your Telegram location to set up local rain forecasts.")
+    await update.message.reply_text("Welcome! Send your Telegram location to set up local rain forecasts.", reply_markup=ReplyKeyboardRemove())
     return WAITING_FOR_LOCATION
 
 
 async def change_location(update, context):
-    await update.message.reply_text("Send your new Telegram location. This will be used for automatic alerts.")
+    await update.message.reply_text("Send your new Telegram location. This will be used for automatic alerts.", reply_markup=ReplyKeyboardRemove())
     return WAITING_FOR_LOCATION
 
 
@@ -213,16 +212,16 @@ async def receive_location(
     print(userid, latitude, longitude)
     
     if not in_coverage(latitude, longitude):
-        await update.message.reply_text("That location is outside our radar coverage. Please send a location within Singapore's radar map.")
+        await update.message.reply_text("That location is outside our radar coverage. Please send a location within Singapore's radar map.", reply_markup=ReplyKeyboardRemove())
         return WAITING_FOR_LOCATION
     async with settings_lock(context):
         success = await asyncio.to_thread(add_location, userid, lat=latitude, long=longitude)
     if not success:
-        await update.message.reply_text("Couldn't save your location. Please send it again.")
+        await update.message.reply_text("Couldn't save your location. Please send it again.", reply_markup=ReplyKeyboardRemove())
         return WAITING_FOR_LOCATION
     context.application.bot_data.setdefault("alert_history", {}).pop(userid, None)
     print("rcv lcoation called ")
-    await update.message.reply_text("Location updated/saved")
+    await update.message.reply_text("Location updated/saved", reply_markup=ReplyKeyboardRemove())
     
     await update.message.reply_text(
 		"Select mode:",
@@ -242,9 +241,9 @@ async def update_mode(update, context):
     userid = update.effective_chat.id
     current_mode = await asyncio.to_thread(get_user_mode, userid)
     if current_mode is None:
-        await update.message.reply_text("Use /start to set up your location first.")
+        await update.message.reply_text("Use /start to set up your location first.", reply_markup=ReplyKeyboardRemove())
         return ConversationHandler.END
-    await update.message.reply_text(f"Current alert setting: {current_mode}.")
+    await update.message.reply_text(f"Current alert setting: {current_mode}.", reply_markup=ReplyKeyboardRemove())
     await update.message.reply_text(
 		"Select mode:",
 		reply_markup=ReplyKeyboardMarkup(
@@ -271,7 +270,7 @@ async def receive_mode(update, context):
     else:
         await update.message.reply_text(
             "Please select one of the options below."
-        )
+        , reply_markup=ReplyKeyboardRemove())
         return WAITING_FOR_MODE
 
     print(userid, mode)
@@ -282,10 +281,10 @@ async def receive_mode(update, context):
         context.application.bot_data.setdefault("alert_history", {}).pop(userid, None)
         message = ("Automatic alerts enabled: one when rain is predicted, then only when "
                    "rain is predicted to end or radar shows it has ended." if mode == "automatic"
-                   else "Automatic alerts paused. Tap My forecast whenever you need an update.")
-        await update.message.reply_text(message, reply_markup=main_menu(update.effective_chat.id))
+                   else "Automatic alerts paused. Use /menu then My forecast whenever you need an update.")
+        await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
     else:
-        await update.message.reply_text("Couldn't save your settings. Please try again.")
+        await update.message.reply_text("Couldn't save your settings. Please try again.", reply_markup=ReplyKeyboardRemove())
         return WAITING_FOR_MODE
     
 
@@ -297,21 +296,21 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
         await handle_actual(update, context, folder_path)
         return
     if update.message.text != "My forecast":
-        await update.message.reply_text("Choose an option below, or share a location for a forecast.", reply_markup=main_menu(update.effective_chat.id))
+        await update.message.reply_text("Use /menu to choose an option, or share a location for a forecast.", reply_markup=ReplyKeyboardRemove())
         return
     if update.effective_chat.id < 0:
         await handle_group_forecasts(update, context, model, folder_path, norm_stats)
         return
     location = await asyncio.to_thread(get_location, update.effective_chat.id)
     if not location:
-        await update.message.reply_text("Use /start to save your location first.", reply_markup=main_menu(update.effective_chat.id))
+        await update.message.reply_text("Use /start to save your location first.", reply_markup=ReplyKeyboardRemove())
         return
     if not in_coverage(float(location[0]), float(location[1])):
-        await update.message.reply_text("Your saved location is outside radar coverage. Tap Change location.", reply_markup=main_menu(update.effective_chat.id))
+        await update.message.reply_text("Your saved location is outside radar coverage. Tap Change location.", reply_markup=ReplyKeyboardRemove())
         return
     prediction = context.application.bot_data.get("latest_prediction")
     if not is_fresh(prediction):
-        await update.message.reply_text("Checking for a current forecast…")
+        await update.message.reply_text("Checking for a current forecast…", reply_markup=ReplyKeyboardRemove())
         prediction = await run_model(model, folder_path, norm_stats)
     if not is_fresh(prediction):
         await send_actual_fallback(update, folder_path, location)
@@ -322,7 +321,7 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
         image.close()
         await send_actual_fallback(update, folder_path, location)
         return
-    await update.message.reply_photo(photo=image, caption=caption, reply_markup=main_menu(update.effective_chat.id))
+    await update.message.reply_photo(photo=image, caption=caption, reply_markup=ReplyKeyboardRemove())
 
 
 async def run_model(model, folder_path, norm_stats=None, tick=None):
@@ -436,7 +435,7 @@ async def handle_location(
     latitude = location.latitude
     longitude = location.longitude
     if not in_coverage(latitude, longitude):
-        await update.message.reply_text("That location is outside our radar coverage.", reply_markup=main_menu(update.effective_chat.id))
+        await update.message.reply_text("That location is outside our radar coverage.", reply_markup=ReplyKeyboardRemove())
         return
 
     latest_prediction = context.application.bot_data.get(
@@ -468,7 +467,7 @@ async def handle_location(
     await update.message.reply_photo(
         photo=plot_buffer,
         caption=caption,
-        reply_markup=main_menu(update.effective_chat.id),
+        reply_markup=ReplyKeyboardRemove(),
     )
 
 
@@ -572,7 +571,7 @@ async def send_actual_fallback(update, folder_path, location):
     if latest_png is None:
         await update.message.reply_text(
             "FORECAST DELAYED\n\nNo radar image is available yet. Please try again shortly.",
-            reply_markup=main_menu(update.effective_chat.id),
+            reply_markup=ReplyKeyboardRemove(),
         )
         return
     try:
@@ -581,12 +580,12 @@ async def send_actual_fallback(update, folder_path, location):
         print(f"Radar fallback unavailable: {exc}")
         await update.message.reply_text(
             "FORECAST DELAYED\n\nThe latest radar image could not be loaded. Please try again shortly.",
-            reply_markup=main_menu(update.effective_chat.id),
+            reply_markup=ReplyKeyboardRemove(),
         )
         return
     caption = "FORECAST DELAYED — SHOWING ACTUAL RADAR\n\n" + caption
     try:
-        await update.message.reply_photo(photo=image, caption=caption, reply_markup=main_menu(update.effective_chat.id))
+        await update.message.reply_photo(photo=image, caption=caption, reply_markup=ReplyKeyboardRemove())
     finally:
         image.close()
 
@@ -599,7 +598,7 @@ async def handle_actual(
     latest_png = await asyncio.to_thread(get_latest_radar_png, folder_path)
 
     if latest_png is None:
-        await update.message.reply_text("No radar images available yet.")
+        await update.message.reply_text("No radar images available yet.", reply_markup=ReplyKeyboardRemove())
         return
 
     location = await asyncio.to_thread(get_location, update.effective_chat.id)
@@ -609,10 +608,10 @@ async def handle_actual(
         print(f"Actual radar unavailable: {exc}")
         await update.message.reply_text(
             "ACTUAL RADAR UNAVAILABLE\n\nThe latest radar image could not be decoded. Please try again shortly.",
-            reply_markup=main_menu(update.effective_chat.id))
+            reply_markup=ReplyKeyboardRemove())
         return
     try:
-        await update.message.reply_photo(photo=plot_buffer, caption=caption, reply_markup=main_menu(update.effective_chat.id))
+        await update.message.reply_photo(photo=plot_buffer, caption=caption, reply_markup=ReplyKeyboardRemove())
     finally:
         plot_buffer.close()
 
@@ -729,7 +728,7 @@ async def check_model_queue(context, model, folder_path, norm_stats, model_ready
         if current is None or result["observed_at"] > current["observed_at"]:
             context.application.bot_data["latest_prediction"] = result
     # Retry durable notifications even when there are no newly arrived radar frames.
-    await deliver_notifications(context, reply_markup=main_menu)
+    await deliver_notifications(context)
 
 
 async def send_auto_update(context, latest_prediction):
@@ -777,7 +776,7 @@ async def send_auto_update(context, latest_prediction):
 async def handle_group_forecasts(update, context, model, folder_path, norm_stats=None):
     rows = await asyncio.to_thread(list_locations, update.effective_chat.id)
     if not rows:
-        await update.message.reply_text('Use /start to save the group Main location first.', reply_markup=main_menu(update.effective_chat.id))
+        await update.message.reply_text('Use /start to save the group Main location first.', reply_markup=ReplyKeyboardRemove())
         return
     prediction = context.application.bot_data.get('latest_prediction')
     if not is_fresh(prediction):
@@ -786,9 +785,9 @@ async def handle_group_forecasts(update, context, model, folder_path, norm_stats
         context.application.bot_data['latest_prediction'] = prediction
     for row in rows:
         location = (float(row['latitude']), float(row['longitude']))
-        await update.message.reply_text(row['label'])
+        await update.message.reply_text(row['label'], reply_markup=ReplyKeyboardRemove())
         if not in_coverage(*location):
-            await update.message.reply_text('This saved location is outside radar coverage.')
+            await update.message.reply_text('This saved location is outside radar coverage.', reply_markup=ReplyKeyboardRemove())
             continue
         if not is_fresh(prediction):
             await send_actual_fallback(update, folder_path, location)
@@ -796,7 +795,7 @@ async def handle_group_forecasts(update, context, model, folder_path, norm_stats
         image, caption = await asyncio.to_thread(build_location_forecast, *location, prediction)
         try:
             if is_fresh(prediction):
-                await update.message.reply_photo(photo=image, caption=f"{row['label']}\n{caption}", reply_markup=main_menu(update.effective_chat.id))
+                await update.message.reply_photo(photo=image, caption=f"{row['label']}\n{caption}", reply_markup=ReplyKeyboardRemove())
             else:
                 await send_actual_fallback(update, folder_path, location)
         finally:

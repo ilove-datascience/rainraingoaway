@@ -110,14 +110,20 @@ do not mean it selected the GPU.
 uv run python src/main.py
 ```
 
-Startup launches the radar scraper, weather scraper, and frame-cache worker,
+Startup launches independent 70 km and 240 km radar scrapers, the weather scraper, and the frame-cache worker,
 loads the model, checks recent radar history, and starts Telegram polling. The
 prediction queue is checked every 30 seconds; radar frames follow five-minute
 ticks. Allow time for usable radar and weather inputs to arrive.
 
+240 km maps are saved under `data/240km/png/` every five-minute radar tick, with
+retries when unavailable. Forecasting continues to use 70 km maps; the separate
+240 km worker does not feed the model queue or delay the 70 km worker.
+
 In a private chat or group with the bot:
 
 - `/start`: register your location and choose an alert mode.
+- `/menu`: show the buttons (and leave any unfinished setup).
+- `/cancel`: cancel setup and clear the buttons.
 - **My forecast**: request a forecast for your saved location.
 - **Current radar** or `/actual`: request the latest radar snapshot.
 - **Change location**: update your saved location.
@@ -132,7 +138,8 @@ chat IDs and must support signed BIGINT values (group IDs are negative).
 
 Groups have **Add location**, **Saved locations**, and **Remove location** buttons.
 Add and Remove prompt for a name; Add then asks for a Telegram location.
-Use `/cancel` to return to the menu. The equivalent commands also work:
+Buttons clear after completed actions or cancellation. Use `/menu` to bring them
+back. Automatic alerts do not open the menu. The equivalent commands also work:
 
 - `/addlocation Office`: then share a Telegram location. Use `/cancel` to cancel.
 - `/locations`: list saved names and coordinates.

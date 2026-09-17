@@ -119,20 +119,15 @@ def main() -> None:
         name="frame-cache",
     ).start()
 
-    scraper_thread = threading.Thread(
-        target=run_scraper_forever,
-        kwargs={
-            "file_ready_queue": file_ready_queue
-        },
-        daemon=True,
-        name="radar-scraper"
-    )
-
-    scraper_thread.start()
-
-    print(
-        f"Started radar scraper thread, time: {dt_start}"
-    )
+    # Independent loops keep archive downloads from delaying live 70km inputs.
+    for radar_range in ("70km", "240km"):
+        threading.Thread(
+            target=run_scraper_forever,
+            kwargs={"img_names": (radar_range,), "file_ready_queue": file_ready_queue},
+            daemon=True,
+            name=f"radar-scraper-{radar_range}",
+        ).start()
+        print(f"Started {radar_range} radar scraper thread, time: {dt_start}")
 
     weather_thread = threading.Thread(
         target=run_weather_scraper_forever,

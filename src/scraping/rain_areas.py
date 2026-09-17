@@ -113,7 +113,7 @@ def attempt_get_most_recent(img_name = "70km", dt_now:datetime | None= None) -> 
     return not fellback 
 
 def run_scraper_forever(
-    img_names: tuple[str, ...] = ("70km",),
+    img_names: tuple[str, ...] = ("70km", "240km"),
     interval_seconds: int = FETCH_INTERVAL_SECONDS,
     model_ready_queue: queue.Queue | None = None,
     file_ready_queue: queue.Queue | None = None,

@@ -25,7 +25,7 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         self.rows = [dict(location_id=0, label='Main', latitude=1.3, longitude=103.8),
                      dict(location_id=7, label='Office', latitude=1.35, longitude=103.9)]
         self.env = functions('src/telegram_code/group_locations.py', dict(
-            asyncio=asyncio, ConversationHandler=SimpleNamespace(END=-1), WAITING_FOR_EXTRA_LOCATION=3, WAITING_FOR_LOCATION_NAME=4, WAITING_FOR_REMOVAL_NAME=5,
+            ReplyKeyboardRemove=lambda: "removed", asyncio=asyncio, ConversationHandler=SimpleNamespace(END=-1), WAITING_FOR_EXTRA_LOCATION=3, WAITING_FOR_LOCATION_NAME=4, WAITING_FOR_REMOVAL_NAME=5,
             ForceReply=lambda: None, main_menu=lambda *args: None,
             in_coverage=lambda *args: True, settings_lock=lambda ctx: asyncio.Lock()))
         self.env.update(list_locations=Mock(return_value=self.rows), add_named_location=Mock(return_value=True))
@@ -33,6 +33,22 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         self.update = SimpleNamespace(effective_chat=SimpleNamespace(id=-1001, type='supergroup'),
             message=SimpleNamespace(reply_text=AsyncMock(), reply_photo=AsyncMock(),
                                     location=SimpleNamespace(latitude=1.3, longitude=103.8)))
+
+    async def test_menu_reopens_buttons_and_clears_pending_setup(self):
+        self.context.chat_data['new_location_label'] = 'Unfinished'
+        env = functions('src/telegram_code/menus.py', dict(
+            ReplyKeyboardMarkup=lambda rows, **kwargs: rows,
+            ConversationHandler=SimpleNamespace(END=-1)))
+        self.assertEqual(await env['show_menu'](self.update, self.context), -1)
+        self.assertNotIn('new_location_label', self.context.chat_data)
+        self.assertIn(['Add location', 'Saved locations'], self.update.message.reply_text.await_args.kwargs['reply_markup'])
+
+    async def test_completion_and_cancel_remove_keyboard(self):
+        await self.env['add_location_command'](self.update, self.context)
+        await self.env['receive_extra_location'](self.update, self.context)
+        self.assertEqual(self.update.message.reply_text.await_args.kwargs['reply_markup'], 'removed')
+        await self.env['cancel_location'](self.update, self.context)
+        self.assertEqual(self.update.message.reply_text.await_args.kwargs['reply_markup'], 'removed')
 
     async def test_button_add_and_remove_flow(self):
         self.context.args = None
@@ -69,7 +85,7 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_all_forecasts_labelled_and_images_closed(self):
         images = [BytesIO(b'a'), BytesIO(b'b')]
-        env = functions('src/telegram_code/methods.py', dict(asyncio=asyncio,
+        env = functions('src/telegram_code/methods.py', dict(ReplyKeyboardRemove=lambda: "removed", asyncio=asyncio,
             list_locations=lambda chat: self.rows, is_fresh=bool, main_menu=lambda *args: None,
             in_coverage=lambda *args: True, build_location_forecast=Mock(side_effect=[(images[0], 'forecast'), (images[1], 'forecast')]),
             run_model=AsyncMock(return_value={'fresh': True})), {'handle_group_forecasts'})
