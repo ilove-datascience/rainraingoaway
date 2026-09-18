@@ -193,22 +193,64 @@ def save_to_csv(data_df: pd.DataFrame, timestamp: Optional[str] = None) -> Path:
     return output_path
 
 
-def main(file_ready_queue=None) -> None:
-    while True:
-        # Ensure we run on an exact 5-minute boundary (or immediately if already aligned).
-        sleep_until_next_five_minute_boundary()
-        now = datetime.now(SINGAPORE_TZ)
-        tick = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
+WEATHER_RETRY_MAX_AGE = timedelta(hours=1)
+
+
+def collect_pending_weather(pending, file_ready_queue=None, now=None):
+    """Prioritise the newest tick, then repair one older gap per pass."""
+    current = now or datetime.now(SINGAPORE_TZ)
+    expired = {tick for tick in pending if current - tick >= WEATHER_RETRY_MAX_AGE}
+    for tick in sorted(expired):
+        print(f"weather retry expired for {tick:%Y%m%d%H%M}; use the backlog tool for older gaps")
+    pending.difference_update(expired)
+    if not pending:
+        return
+    ordered = sorted(pending)
+    selected = [ordered[-1]]
+    if len(ordered) > 1:
+        selected.append(ordered[0])
+    for tick in selected:
+        # A slow previous request must not start another already-expired retry.
+        current = now or datetime.now(SINGAPORE_TZ)
+        if current - tick >= WEATHER_RETRY_MAX_AGE:
+            pending.discard(tick)
+            print(f"weather retry expired for {tick:%Y%m%d%H%M}")
+            continue
+        key = tick.strftime("%Y%m%d%H%M")
+        path = OUTPUT_DIR / f"weather_{key}.csv"
+        if path.is_file() and path.stat().st_size > 0:
+            pending.discard(tick)
+            continue
         try:
-            data_df = fetch_once()
-            output_path = save_to_csv(data_df, timestamp=tick.strftime("%Y%m%d%H%M"))
-            if file_ready_queue is not None:
-                file_ready_queue.put(int(tick.strftime("%Y%m%d%H%M")))
-            print(f"saved {len(data_df)} rows to {output_path}")
-            
+            # Retry the original timestamp, never relabel current observations.
+            data_df = fetch_once(tick)
+            if data_df.empty:
+                raise ValueError("API returned no weather rows")
+            output_path = save_to_csv(data_df, timestamp=key)
         except Exception as exc:
-            # Never let a transient failure (network error, API hiccup, etc.) kill the loop.
-            print(f"weather fetch failed, will retry next tick: {exc}")
+            print(f"weather fetch failed for {key}; retained for retry: {exc}")
+            continue
+        pending.discard(tick)
+        if file_ready_queue is not None:
+            file_ready_queue.put(int(key))
+        print(f"saved {len(data_df)} rows to {output_path}")
+
+
+def main(file_ready_queue=None) -> None:
+    now = datetime.now(SINGAPORE_TZ)
+    current = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
+    # Recover recent gaps after a restart; the backlog tool handles older history.
+    next_tick = current - timedelta(hours=1)
+    pending = set()
+    while True:
+        now = datetime.now(SINGAPORE_TZ)
+        current = now.replace(minute=now.minute - now.minute % 5, second=0, microsecond=0)
+        # Include every elapsed boundary even if an API call took several minutes.
+        while next_tick <= current:
+            pending.add(next_tick)
+            next_tick += timedelta(minutes=5)
+        collect_pending_weather(pending, file_ready_queue)
+        time.sleep(15)
 
 
 if __name__ == "__main__":

@@ -341,3 +341,7 @@ weather, model and scheduler messages, with timestamps, severity and thread name
 The active file rotates at 10 MiB, keeping five backups (`.log.1` to `.log.5`).
 Logs append across restarts and the entire `logs/` directory is ignored by Git.
 Existing diagnostic output can contain user IDs and locations; review logs before sharing.
+
+Weather collection retries failed timestamps for up to one hour, then expires them.
+Slow requests do not skip intervening ticks. On restart, the previous hour is checked
+for gaps; use `src/scraping/gov_api_backlog.py` to recover older missing files.
