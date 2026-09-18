@@ -1,3 +1,6 @@
+from pathlib import Path
+_repo_root = Path(__file__).resolve().parents[1]
+
 import os, sys, json
 from pathlib import Path
 import torch, numpy as np, pandas as pd
@@ -17,7 +20,7 @@ radar_dataset_multimodal = multimodal_dataset_module.radar_dataset_multimodal
 # the same model (with persisted t environment) to predict t+10.
 sequence_length = 3
 num_target_steps = 2
-project_root = Path(r"C:\Users\Jacobs laptop\rainraingoaway")
+project_root = Path(str(_repo_root))
 land_use_path = project_root / "data" / "land_use_masks.npy"
 dataset = radar_dataset_multimodal(
     str(project_root / "data" / "70km" / "png"),
@@ -65,7 +68,7 @@ model2 = ConvLSTM_MM(input_dim=7,
                     use_land_use=False)
 
 model2 = model2.to(device)
-model2.load_state_dict(torch.load(r"C:\Users\Jacobs laptop\rainraingoaway\models\model_best_long.pkl", map_location=device))
+model2.load_state_dict(torch.load(str(_repo_root / 'models/model_best_long.pkl'), map_location=device))
 print("Loaded production model_best_long.pkl into model2")
 # HELD-OUT TEST: frozen p=0.40, minimum size=40 for both leads
 # Uses model2 and the existing chronological test_loader; no threshold tuning.

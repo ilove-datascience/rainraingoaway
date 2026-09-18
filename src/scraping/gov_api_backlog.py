@@ -1,4 +1,3 @@
-import os
 import datetime
 import random
 import time
@@ -11,33 +10,28 @@ if __package__ in {None, ""}:
 else:
     from .gov_api import fetch_once, save_to_csv
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 def load_data_names(folder_path, file_type = ".png"):
-    # Load the data from the specified folder
-    data = []
-    count = 0 
-    for file_name in os.listdir(folder_path):
-        if file_name.endswith(file_type):
-            file_name = file_name.strip(file_type)
-            data.append(file_name)
-            count += 1
-    print(f"Loaded {count}")
-    
+    # A fresh checkout may not have an environment directory yet.
+    data = sorted(path.stem for path in Path(folder_path).glob(f"*{file_type}") if path.is_file())
+    print(f"Loaded {len(data)}")
     return data
 
 
 def main():
-    data_env = load_data_names("C:\\Users\\Jacobs laptop\\rainraingoaway\\data\\environment", ".csv")
-    data_radar = load_data_names("C:\\Users\\Jacobs laptop\\rainraingoaway\\data\\70km\\png", ".png")
+    data_env = load_data_names(PROJECT_ROOT / "data" / "environment", ".csv")
+    data_radar = load_data_names(PROJECT_ROOT / "data" / "70km" / "png", ".png")
     data_env_clean= []
     for i, sample in enumerate(data_env):
         
-        data_env_clean.append(sample.strip("weather_"))
+        data_env_clean.append(sample.removeprefix("weather_"))
 
     radar_set= set(data_radar)
     env_set= set(data_env_clean)
     missing = [] 
 
-    for item in radar_set:
+    for item in sorted(radar_set):
         if item not in env_set:
             missing.append(item)
             print(f"Missing {item}")
