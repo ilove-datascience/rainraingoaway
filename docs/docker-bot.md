@@ -49,10 +49,15 @@ docker compose -f compose.bot.yaml logs -f --tail 100 bot
 docker compose -f compose.bot.yaml ps
 ```
 
-Startup waits for MySQL, creates missing base tables on a fresh database, and runs
-the existing additive rain-state/location migration. Existing rows are preserved.
-The database account needs CREATE/ALTER permissions as well as normal CRUD rights.
-Existing legacy chat ID columns must already support signed BIGINT group IDs.
+Startup waits for MySQL and validates existing columns and location keys using
+read-only queries. Normal operation needs SELECT/INSERT/UPDATE/DELETE, without
+CREATE or ALTER. Existing chat ID columns must support signed BIGINT group IDs.
+For a missing/outdated schema, run the following once using a database account
+with CREATE/ALTER permissions, then restore the normal runtime account:
+
+```powershell
+docker compose -f compose.bot.yaml run --rm --no-deps bot --init-db
+```
 
 The service restarts after process failures and Docker restarts unless explicitly
 stopped. Docker Desktop itself must start at login on Windows. No inbound ports
@@ -83,7 +88,9 @@ BOT_DB_ROOT_PASSWORD=choose-a-different-root-password
 ```
 
 ```powershell
-docker compose -f compose.bot.yaml -f compose.bot.mysql.yaml up -d --build
+docker compose -f compose.bot.yaml -f compose.bot.mysql.yaml up -d mysql
+docker compose -f compose.bot.yaml -f compose.bot.mysql.yaml run --rm --build bot --init-db
+docker compose -f compose.bot.yaml -f compose.bot.mysql.yaml up -d
 ```
 
 The database uses the `bot-mysql` named volume, publishes no host port, and the bot

@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 SPEC = importlib.util.spec_from_file_location(
     'bot_service', Path(__file__).resolve().parents[1] / 'scripts/run_bot_service.py')
@@ -13,6 +13,37 @@ SPEC.loader.exec_module(service)
 
 
 class BotServiceTests(unittest.TestCase):
+    def test_normal_startup_never_runs_ddl_or_migrations(self):
+        conn = MagicMock()
+        cursor = conn.cursor.return_value
+        def results():
+            sql = cursor.execute.call_args.args[0]
+            names = (['userid', 'location_id'] if 'user_location' in sql else
+                     ['userid', 'location_id', 'settings_version', 'observed_at', 'reason'])
+            return [(None, None, None, i, name) for i, name in enumerate(names)] if sql.startswith('SHOW') else []
+        cursor.fetchall.side_effect = results
+        with patch('telegram_code.database._get_db_connection', return_value=conn), patch(
+                'telegram_code.rain_state_db.ensure_rain_state_schema') as migrate:
+            service.prepare_database()
+        migrate.assert_not_called()
+        conn.commit.assert_not_called()
+        conn.close.assert_called_once()
+        self.assertTrue(all(call.args[0].startswith(('SELECT', 'SHOW')) for call in cursor.execute.call_args_list))
+
+    def test_outdated_schema_does_not_try_to_migrate(self):
+        cursor = MagicMock()
+        cursor.fetchall.return_value = []
+        with self.assertRaisesRegex(RuntimeError, '--init-db'):
+            service.validate_schema(cursor)
+
+    def test_explicit_init_runs_migration(self):
+        conn = MagicMock()
+        with patch('telegram_code.database._get_db_connection', return_value=conn), patch(
+                'telegram_code.rain_state_db.ensure_rain_state_schema') as migrate:
+            service.prepare_database(initialize=True)
+        migrate.assert_called_once()
+        self.assertTrue(all(c.args[0].startswith('CREATE') for c in conn.cursor.return_value.execute.call_args_list))
+
     def test_authentication_exception_is_redacted(self):
         from runtime_logging import SecretSafeFormatter
         secret = '123456789:abcdefghijklmnopqrstuvwxyz123456789'
