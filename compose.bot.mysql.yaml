@@ -1,0 +1,33 @@
+# Optional fresh MySQL instance. Existing users are NOT copied automatically.
+services:
+  bot:
+    environment:
+      MYSQLHOST: mysql
+      MYSQLUSER: weatherbot
+      MYSQL_ROOT_PASSWORD: ${BOT_DB_PASSWORD:?Set BOT_DB_PASSWORD in .env}
+    depends_on:
+      mysql:
+        condition: service_healthy
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-WeatherBot}
+      MYSQL_USER: weatherbot
+      MYSQL_PASSWORD: ${BOT_DB_PASSWORD:?Set BOT_DB_PASSWORD in .env}
+      MYSQL_ROOT_PASSWORD: ${BOT_DB_ROOT_PASSWORD:?Set BOT_DB_ROOT_PASSWORD in .env}
+    volumes:
+      - bot-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql --protocol=TCP -h 127.0.0.1 -u weatherbot -D \"$$MYSQL_DATABASE\" -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+volumes:
+  bot-mysql:

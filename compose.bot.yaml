@@ -1,0 +1,35 @@
+name: rainraingoaway-bot
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile.bot
+    image: rainraingoaway-bot:local
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    env_file: .env
+    environment:
+      MYSQLHOST: ${BOT_MYSQL_HOST:-host.docker.internal}
+      MULTIMODAL_CACHE_DIR: /app/data/multimodal_cache
+      TZ: Asia/Singapore
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: ./data
+        target: /app/data
+      - type: bind
+        source: ./models
+        target: /app/models
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./logs
+        target: /app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

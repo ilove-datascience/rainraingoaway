@@ -1,0 +1,17 @@
+**
+!Dockerfile.bot
+!pyproject.toml
+!sgbaseimg_70km.png
+!docker/
+!docker/bot-requirements.txt
+!src/
+!src/**
+!scripts/
+!scripts/run_bot_service.py
+**/__pycache__/
+**/*.pyc
+**/*.ipynb
+**/*.pkl
+**/*.pt
+**/*.csv
+**/*.npy

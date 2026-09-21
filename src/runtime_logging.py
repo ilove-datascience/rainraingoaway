@@ -1,10 +1,25 @@
 """Console and bounded on-disk logging for the bot and its worker threads."""
 import io
 import logging
+import os
+import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import sys
 import threading
+
+
+class SecretSafeFormatter(logging.Formatter):
+    """Redact credentials in both messages and formatted exception tracebacks."""
+
+    def format(self, record):
+        text = super().format(record)
+        for name in ('tele_api_key', 'gov_api_key', 'GOV_API_KEY',
+                     'MYSQL_ROOT_PASSWORD', 'KUMA_PUSH_URL'):
+            value = os.getenv(name)
+            if value:
+                text = text.replace(value, '[REDACTED]')
+        return re.sub(r'\b\d{6,}:[A-Za-z0-9_-]{20,}', '[REDACTED]', text)
 
 
 class LoggedStream(io.TextIOBase):
@@ -51,7 +66,7 @@ def configure_logging(log_dir=None, *, max_bytes=10 * 1024 * 1024, backup_count=
     directory = Path(log_dir) if log_dir else Path(__file__).resolve().parents[1] / "logs"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "rainraingoaway.log"
-    formatter = logging.Formatter(
+    formatter = SecretSafeFormatter(
         "%(asctime)s %(levelname)s [%(threadName)s] %(name)s: %(message)s"
     )
     file_handler = RotatingFileHandler(

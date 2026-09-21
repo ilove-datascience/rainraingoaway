@@ -345,3 +345,13 @@ Existing diagnostic output can contain user IDs and locations; review logs befor
 Weather collection retries failed timestamps for up to one hour, then expires them.
 Slow requests do not skip intervening ticks. On restart, the previous hour is checked
 for gaps; use `src/scraping/gov_api_backlog.py` to recover older missing files.
+
+## Docker bot service
+
+See [Docker bot setup](docs/docker-bot.md) for persistent bot, radar/weather
+collection and forecasting services using your existing MySQL database, with an
+optional containerized database. After configuring credentials and model files:
+
+```powershell
+docker compose -f compose.bot.yaml up -d --build
+```
