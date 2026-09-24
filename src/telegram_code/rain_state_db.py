@@ -86,9 +86,10 @@ def save_rain_state(row, result, message=None, now=None, photo=None):
                 rain_forecast_at=%s, radar_raining=%s, rain_forecast_value=%s
                 WHERE userid=%s AND location_id=%s AND latitude=%s AND longitude=%s
                 AND rain_settings_version=%s
-                AND (rain_observed_at IS NULL OR rain_observed_at < %s)''',
+                AND (rain_observed_at IS NULL OR rain_observed_at < %s
+                     OR (rain_observed_at = %s AND rain_forecast_value IS NULL AND %s IS NOT NULL))''',
                 (result['state'], result['rain_observed_at'], result['rain_forecast_at'],
-                 result['radar_raining'], result['rain_forecast_value'], row['userid'], row.get('location_id', 0), row['latitude'], row['longitude'], row['rain_settings_version'], result['rain_observed_at']))
+                 result['radar_raining'], result['rain_forecast_value'], row['userid'], row.get('location_id', 0), row['latitude'], row['longitude'], row['rain_settings_version'], result['rain_observed_at'], result['rain_observed_at'], result['rain_forecast_value']))
             changed = cur.rowcount > 0
             if changed and message and user[0] == 'automatic':
                 cur.execute('''INSERT INTO rain_notifications

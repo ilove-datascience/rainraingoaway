@@ -1,5 +1,5 @@
 """Short, explicit forecast versus observation messages."""
-from telegram_code.rain_state import START, ENDING, ENDED, CANCELLED
+from telegram_code.rain_state import START, ENDING, ENDED, CANCELLED, OBSERVED
 import math
 
 
@@ -38,6 +38,6 @@ def rain_notice(title, observed, forecast=None, radius=None, intensity=None, obs
 
 
 def alert_text(reason, observed, forecast, radius, intensity=None):
-    titles = {START: 'RAIN EXPECTED', ENDING: 'RAIN EXPECTED TO CLEAR',
+    titles = {OBSERVED: 'RAIN DETECTED', START: 'RAIN EXPECTED', ENDING: 'RAIN EXPECTED TO CLEAR',
               ENDED: 'RAIN CLEARED', CANCELLED: 'RAIN NO LONGER EXPECTED'}
-    return rain_notice(titles[reason], observed, None if reason == ENDED else forecast, radius, intensity)
+    return rain_notice(titles[reason], observed, None if reason in (ENDED, OBSERVED) else forecast, radius, intensity)

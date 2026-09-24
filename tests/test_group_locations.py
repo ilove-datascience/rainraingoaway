@@ -167,7 +167,7 @@ class GroupDatabaseTests(unittest.TestCase):
         self.env['ensure_rain_state_schema']()  # Re-running migration must be safe.
         functions('src/telegram_code/group_locations.py', self.env)
         functions('src/telegram_code/notification_delivery.py', self.env,
-                  {'claim_notification', 'finish_notification'})
+                  {'claim_notification', 'finish_notification', 'release_episode', 'recover_abandoned_notifications'})
         self.env['ENDED'] = 'ended'
         self.env['timedelta'] = timedelta
         cur = self.conn.cursor()
@@ -243,5 +243,56 @@ class GroupDatabaseTests(unittest.TestCase):
         self.assertIsNone(self.env['claim_notification'](now))
 
 
-if __name__ == '__main__':
-    unittest.main()
+
+    def test_observation_upgrade_and_failed_start_releases_episode(self):
+        now = datetime(2026, 9, 22, 15)
+        row = next(r for r in self.env['get_rain_locations']() if r['userid'] == -1001)
+        result = dict(state='predicted norain', rain_observed_at=now,
+                      rain_forecast_at=now+timedelta(minutes=5), radar_raining=False,
+                      rain_forecast_value=None, reason=None)
+        self.assertTrue(self.env['save_rain_state'](row, result))
+        result.update(rain_forecast_value=.2, state='predicted', reason='start')
+        self.assertTrue(self.env['save_rain_state'](row, result, 'rain expected', now))
+        self.assertFalse(self.env['save_rain_state'](row, result, 'duplicate', now))
+        item = self.env['claim_notification'](now)
+        self.env['finish_notification'](item, 'failed', now)
+        row = next(r for r in self.env['get_rain_locations']() if r['userid'] == -1001)
+        self.assertIsNone(row['rain_episode_reason'])
+
+    def test_abandoned_claim_does_not_resend_original(self):
+        now = datetime(2026, 9, 22, 15)
+        row = next(r for r in self.env['get_rain_locations']() if r['userid'] == -1001)
+        result = dict(state='predicted', rain_observed_at=now,
+                      rain_forecast_at=now+timedelta(minutes=5), radar_raining=False,
+                      rain_forecast_value=.2, reason='start')
+        self.env['save_rain_state'](row, result, 'rain expected', now)
+        item = self.env['claim_notification'](now)
+        self.env['recover_abandoned_notifications'](now+timedelta(minutes=16))
+        self.assertIsNone(self.env['claim_notification'](now+timedelta(minutes=16)))
+        cur = self.conn.cursor()
+        cur.execute('SELECT status FROM rain_notifications WHERE id=%s', (item['id'],))
+        self.assertEqual(cur.fetchone()[0], 'abandoned')
+        cur.close()
+        row = next(r for r in self.env['get_rain_locations']() if r['userid'] == -1001)
+        self.assertIsNone(row['rain_episode_reason'])
+
+
+    def test_recovery_preserves_newer_episode_and_known_receipt(self):
+        now = datetime(2026, 9, 22, 15)
+        row = next(r for r in self.env['get_rain_locations']() if r['userid'] == -1001)
+        result = dict(state='predicted', rain_observed_at=now,
+                      rain_forecast_at=now+timedelta(minutes=5), radar_raining=False,
+                      rain_forecast_value=.2, reason='start')
+        self.env['save_rain_state'](row, result, 'first', now)
+        first = self.env['claim_notification'](now)
+        self.env['recover_abandoned_notifications'](now+timedelta(minutes=16), (first['id'],))
+        cur = self.conn.cursor()
+        cur.execute('SELECT status FROM rain_notifications WHERE id=%s', (first['id'],))
+        self.assertEqual(cur.fetchone()[0], 'sending')
+        result['rain_observed_at'] = now+timedelta(minutes=5)
+        result['rain_forecast_at'] = now+timedelta(minutes=10)
+        self.env['save_rain_state'](row, result, 'newer', now+timedelta(minutes=5))
+        self.env['recover_abandoned_notifications'](now+timedelta(minutes=16))
+        row = next(r for r in self.env['get_rain_locations']() if r['userid'] == -1001)
+        self.assertEqual(row['rain_episode_reason'], 'start')
+        cur.close()

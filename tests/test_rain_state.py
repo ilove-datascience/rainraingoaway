@@ -75,6 +75,26 @@ class RainStateTests(unittest.TestCase):
         previous.update(result, rain_alert_reason=result['reason'])
         self.assertIsNone(self.advance(previous, 0, 0, 5)['reason'])
 
+    def test_observed_rain_alerts_when_forecast_misses(self):
+        result = self.advance({}, 0, .2)
+        self.assertEqual(result['reason'], state.OBSERVED)
+        previous = dict(result, rain_episode_reason=state.OBSERVED)
+        self.assertIsNone(self.advance(previous, None, .2, 5)['reason'])
+        self.assertEqual(self.advance(previous, None, 0, 5)['reason'], state.ENDED)
+
+    def test_missing_forecast_does_not_cancel_predicted_rain(self):
+        previous = {'rain_episode_reason':state.START}
+        self.assertIsNone(self.advance(previous, None, 0)['reason'])
+
+    def test_forecast_can_upgrade_same_tick_observation(self):
+        observed = self.advance({}, None, 0)
+        forecast = self.advance(observed, .2, 0)
+        self.assertEqual(forecast['reason'], state.START)
+        self.assertIsNone(self.advance(forecast, .2, 0))
+
+    def test_radar_start_is_not_repeated_after_predicted_start(self):
+        self.assertIsNone(self.advance({'rain_episode_reason':state.START}, None, .2)['reason'])
+
 
 if __name__ == '__main__':
     unittest.main()

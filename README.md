@@ -355,3 +355,21 @@ optional containerized database. After configuring credentials and model files:
 ```powershell
 docker compose -f compose.bot.yaml up -d --build
 ```
+
+
+### Observed-rain alerts and delivery recovery
+
+Automatic alerts also send **RAIN DETECTED** when fresh radar shows rain without
+an earlier active rain alert, even if the forecast predicts dry. A separate
+30-second observation job needs only one radar frame less than 10 minutes old;
+it does not require weather inputs or a successful model run. Forecast alerts
+still expire at their forecast time. Existing active rain episodes suppress
+repeat starts, and observed alerts use an actual-radar image and timestamp.
+
+Definitive delivery failures release the episode marker so new observations can
+trigger an alert. Interrupted/uncertain deliveries are never blindly resent:
+after 15 minutes they are marked `abandoned`, logged, and stop suppressing new
+events, provided no newer event/settings change supersedes them. A new event may
+therefore alert again if the original uncertain send actually reached Telegram.
+Known Telegram receipts retry their database acknowledgement without resending.
+No schema migration is needed for this update.

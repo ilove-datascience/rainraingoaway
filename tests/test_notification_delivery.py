@@ -34,6 +34,9 @@ with patch.dict(sys.modules, {
 
 class DeliveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        recovery = patch.object(delivery, 'recover_abandoned_notifications')
+        recovery.start()
+        self.addCleanup(recovery.stop)
         self.context = types.SimpleNamespace(application=types.SimpleNamespace(bot_data={}),
                                             bot=types.SimpleNamespace(send_message=AsyncMock(return_value=types.SimpleNamespace(message_id=42)),
                                                                       send_photo=AsyncMock(return_value=types.SimpleNamespace(message_id=43))))
@@ -75,16 +78,14 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_photo_ack_failure_does_not_resend(self):
         self.item['photo'] = b'original-image'
-        with patch.object(delivery, 'claim_notification', side_effect=[self.item, None]), patch.object(delivery, 'finish_notification', side_effect=[RuntimeError('offline'), None]):
-            with self.assertRaises(RuntimeError):
-                await delivery.deliver_notifications(self.context)
+        with patch.object(delivery, 'claim_notification', side_effect=[self.item, None, None]), patch.object(delivery, 'finish_notification', side_effect=[RuntimeError('offline'), None]):
+            await delivery.deliver_notifications(self.context)
             await delivery.deliver_notifications(self.context)
             self.context.bot.send_photo.assert_awaited_once()
 
     async def test_ack_failure_retries_database_not_telegram(self):
-        with patch.object(delivery, 'claim_notification', side_effect=[self.item, None]), patch.object(delivery, 'finish_notification', side_effect=[RuntimeError('db down'), None]) as finish:
-            with self.assertRaises(RuntimeError):
-                await delivery.deliver_notifications(self.context)
+        with patch.object(delivery, 'claim_notification', side_effect=[self.item, None, None]), patch.object(delivery, 'finish_notification', side_effect=[RuntimeError('db down'), None]) as finish:
+            await delivery.deliver_notifications(self.context)
             await delivery.deliver_notifications(self.context)
             self.context.bot.send_message.assert_awaited_once()
             self.assertEqual(finish.call_count, 2)

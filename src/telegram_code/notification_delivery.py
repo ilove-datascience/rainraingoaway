@@ -30,10 +30,7 @@ def claim_notification(now):
             status = 'sending' if eligible and not expired else 'cancelled'
             cur.execute('UPDATE rain_notifications SET status=%s WHERE id=%s', (status,item['id']))
             if expired and eligible:
-                # Expired, undelivered start must not suppress a later fresh start.
-                cur.execute('''UPDATE user_location SET rain_episode_reason=rain_alert_reason
-                    WHERE userid=%s AND location_id=%s AND rain_settings_version=%s AND rain_episode_reason=%s''',
-                    (item['userid'],item.get('location_id', 0),item['settings_version'],item['reason']))
+                release_episode(cur, item)
             conn.commit()
             return item if status == 'sending' else {'cancelled': True}
         finally:
@@ -54,6 +51,42 @@ def finish_notification(item, status, now, message_id=None, retry_seconds=0):
                 cur.execute('''UPDATE user_location SET rain_alert_at=%s,rain_alert_reason=%s
                     WHERE userid=%s AND location_id=%s AND rain_settings_version=%s''',
                     (now,item['reason'],item['userid'],item.get('location_id', 0),item['settings_version']))
+            elif status == 'failed':
+                release_episode(cur, item)
+            conn.commit()
+            print(f"Notification {item['id']} delivery status: {status}")
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+
+def release_episode(cur, item):
+    # Do not undo a newer queued/sent event or a user's settings change.
+    cur.execute("""UPDATE user_location SET rain_episode_reason=NULL, rain_alert_reason=NULL
+        WHERE userid=%s AND location_id=%s AND rain_settings_version=%s
+        AND rain_episode_reason=%s AND NOT EXISTS (
+            SELECT 1 FROM rain_notifications n WHERE n.userid=%s AND n.location_id=%s
+            AND n.settings_version=%s AND n.id>%s)""",
+        (item['userid'], item.get('location_id', 0), item['settings_version'], item['reason'],
+         item['userid'], item.get('location_id', 0), item['settings_version'], item['id']))
+
+
+def recover_abandoned_notifications(now, protected_ids=()):
+    """Never resend an ambiguous event; allow new observations after a grace period."""
+    conn = _get_db_connection()
+    try:
+        cur = conn.cursor(dictionary=True)
+        try:
+            cur.execute("""SELECT * FROM rain_notifications
+                WHERE status IN ('sending','uncertain','failed') AND available_at<%s
+                ORDER BY id FOR UPDATE""", (now - timedelta(minutes=15),))
+            for item in cur.fetchall():
+                if item['id'] in protected_ids:
+                    continue  # Receipt is known; retry acknowledgement only.
+                cur.execute("UPDATE rain_notifications SET status='abandoned' WHERE id=%s", (item['id'],))
+                release_episode(cur, item)
+                print(f"Notification {item['id']} abandoned after uncertain delivery; original will not be resent")
             conn.commit()
         finally:
             cur.close()
@@ -62,11 +95,21 @@ def finish_notification(item, status, now, message_id=None, retry_seconds=0):
 
 
 async def deliver_notifications(context, reply_markup=None):
+    lock = context.application.bot_data.setdefault('notification_delivery_lock', asyncio.Lock())
+    async with lock:
+        await _deliver_notifications(context, reply_markup)
+
+
+async def _deliver_notifications(context, reply_markup=None):
     # A receipt whose DB acknowledgement failed is retried without sending again.
     receipts = context.application.bot_data.setdefault('notification_receipts', {})
     for key, receipt in list(receipts.items()):
-        await asyncio.to_thread(finish_notification, *receipt)
-        receipts.pop(key, None)
+        try:
+            await asyncio.to_thread(finish_notification, *receipt)
+            receipts.pop(key, None)
+        except Exception as exc:
+            print(f'Notification {key} receipt retry failed: {type(exc).__name__}')
+    await asyncio.to_thread(recover_abandoned_notifications, sg_now(), tuple(receipts))
     for _ in range(100):
         # Release between recipients so a mode/location change can take effect promptly.
         async with settings_lock(context):
@@ -97,6 +140,9 @@ async def deliver_notifications(context, reply_markup=None):
                 print(f"Notification {item['id']} delivery uncertain; not resending: {type(exc).__name__}")
                 receipt = (item, 'uncertain', now, None, 0)
             receipts[item['id']] = receipt
-            await asyncio.to_thread(finish_notification, *receipt)
-            receipts.pop(item['id'], None)
+            try:
+                await asyncio.to_thread(finish_notification, *receipt)
+                receipts.pop(item['id'], None)
+            except Exception as exc:
+                print(f"Notification {item['id']} receipt save failed: {type(exc).__name__}")
         await asyncio.sleep(0)

@@ -8,9 +8,9 @@ from telegram_code.group_locations import locations_command, remove_location_com
 from telegram_code.heartbeat import schedule_heartbeat
 
 try:
-    from .methods import check_model_queue, handle_actual, handle_location, handle_msg, load_token, start
+    from .methods import check_model_queue, check_radar_notifications, handle_actual, handle_location, handle_msg, load_token, start
 except ImportError:
-    from methods import check_model_queue, handle_actual, handle_location, handle_msg, load_token, start
+    from methods import check_model_queue, check_radar_notifications, handle_actual, handle_location, handle_msg, load_token, start
 
 from telegram_code.conversation_handlers import get_conversation_handler, get_conversation_handler2
 
@@ -49,6 +49,10 @@ def run_bot(model, folder_path, model_ready_queue, norm_stats=None) -> None:
     app.add_handler(CommandHandler("removelocation", remove_location_command))
 
     schedule_heartbeat(app.job_queue)
+    app.job_queue.run_repeating(
+        partial(check_radar_notifications, folder_path=folder_path),
+        interval=30, first=5, name="radar-observation-alerts",
+    )
 
     app.job_queue.run_repeating(
         partial(

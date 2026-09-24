@@ -35,7 +35,7 @@ from telegram_code.rain_state_db import get_rain_locations, save_rain_state
 from telegram_code.notification_delivery import deliver_notifications, settings_lock
 from telegram_code.notification_text import alert_text, rain_notice, intensity_label
 from telegram_code.local_rain import local_rain, in_coverage
-from telegram_code.rain_state import ENDED
+from telegram_code.rain_state import ENDED, OBSERVED
 from telegram_code.database import get_user_mode
 
 
@@ -751,26 +751,32 @@ async def check_model_queue(context, model, folder_path, norm_stats, model_ready
 
 
 async def send_auto_update(context, latest_prediction):
+    lock = context.application.bot_data.setdefault("rain_state_lock", asyncio.Lock())
+    async with lock:
+        return await _send_auto_update(context, latest_prediction)
+
+
+async def _send_auto_update(context, latest_prediction):
     actual = latest_prediction.get("actual_radar")
     if actual is None:
         return False
     rows = await asyncio.to_thread(get_rain_locations)
-    grid = latest_prediction["prediction"]
+    grid = latest_prediction.get("prediction")
     failed = False
     for row in rows:
         try:
             latitude, longitude = float(row["latitude"]), float(row["longitude"])
             if not in_coverage(latitude, longitude):
                 continue
-            forecast, marker, radius = local_rain(grid, latitude, longitude)
-            observed, _, _ = local_rain(actual, latitude, longitude)
+            observed, marker, radius = local_rain(actual, latitude, longitude)
+            forecast = local_rain(grid, latitude, longitude)[0] if grid is not None else None
             result = next_rain_state(row, forecast, observed, latest_prediction["observed_at"], latest_prediction["next_tick"])
             if result is None:
                 continue
             message = None
             photo = None
             if row['mode'] == 'automatic' and should_notify(row, result) and (result["reason"] == ENDED or is_fresh(latest_prediction)):
-                is_actual = result['reason'] == ENDED
+                is_actual = result['reason'] in (ENDED, OBSERVED)
                 value = observed if is_actual else forecast
                 message = alert_text(result["reason"], result["rain_observed_at"], result["rain_forecast_at"], radius, value)
                 message = f"{row.get('label', 'Main')}\n{message}"
@@ -860,3 +866,24 @@ async def handle_group_forecasts(update, context, model, folder_path, norm_stats
             await send_group_actual(update, folder_path, rows)
     finally:
         image.close()
+
+
+async def check_radar_notifications(context, folder_path):
+    """Observed rain needs one fresh frame, independent of model/weather success."""
+    try:
+        latest = await asyncio.to_thread(get_latest_radar_png, folder_path)
+        if latest is None:
+            return
+        observed = datetime.strptime(latest.stem, '%Y%m%d%H%M')
+        if not observed <= sg_now() < observed + timedelta(minutes=10):
+            return
+        radar = await asyncio.to_thread(decode_png, latest, SOURCE)
+        radar = np.flipud(remove_small_echoes(radar))
+        await send_auto_update(context, {
+            'actual_radar': radar, 'observed_at': observed,
+            'next_tick': observed + timedelta(minutes=10),
+        })
+    except Exception as exc:
+        print(f'Observed-rain notification check failed: {type(exc).__name__}')
+    finally:
+        await deliver_notifications(context)

@@ -1,6 +1,7 @@
 """Persistent location rain-state decisions (times are Singapore local time)."""
 
 START = 'Rain is predicted at your location'
+OBSERVED = 'Radar confirms rain at your location'
 ENDING = 'Rain is predicted to end'
 ENDED = 'Radar no longer shows rain at your location'
 CANCELLED = 'Rain is no longer predicted at your location'
@@ -8,20 +9,25 @@ ACTIVE_ALERTS = {START, 'Radar confirms rain at your location', 'Predicted rain 
 
 
 def next_rain_state(previous, forecast_value, actual_value, observed_at, forecast_at):
-    if previous.get('rain_observed_at') and observed_at <= previous['rain_observed_at']:
+    old_time = previous.get('rain_observed_at')
+    upgrade = (observed_at == old_time and previous.get('rain_forecast_value') is None
+               and forecast_value is not None)
+    if old_time and (observed_at < old_time or (observed_at == old_time and not upgrade)):
         return None
     # Radar uses the dataset's rain threshold; forecast uses the bot's gated threshold.
     wet = actual_value > 0.01
-    predicted = forecast_value >= 0.003
+    predicted = None if forecast_value is None else forecast_value >= 0.003
     state = 'confirmed' if wet else 'predicted'
-    if not predicted:
+    if predicted is False or (predicted is None and not wet):
         state = 'predicted norain'
     reason = None
     last_alert = previous.get('rain_episode_reason') or previous.get('rain_alert_reason')
     active = last_alert in ACTIVE_ALERTS
     if not wet and previous.get('radar_raining') and (active or last_alert == ENDING):
         reason = ENDED
-    elif not predicted and active:
+    elif wet and not active and last_alert != ENDING:
+        reason = OBSERVED
+    elif predicted is False and active:
         reason = ENDING if wet else CANCELLED
     elif predicted and not active:
         # A forecast changing back to wet before rain stops is the same episode.
