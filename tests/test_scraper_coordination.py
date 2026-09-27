@@ -24,7 +24,8 @@ def radar_functions(data_dir):
     requests = types.SimpleNamespace(
         get=Mock(), exceptions=types.SimpleNamespace(Timeout=TimeoutError, HTTPError=RuntimeError))
     env = dict(DATA_DIR=Path(data_dir), Path=Path, datetime=datetime, timedelta=timedelta,
-               requests=requests, time=types.SimpleNamespace(sleep=Mock()), uuid=uuid)
+               requests=requests, time=types.SimpleNamespace(sleep=Mock()), uuid=uuid,
+               SG_OFFSET_HOURS=8, datetime_now_str=Mock(return_value=202609101200))
     exec(compile(ast.Module(body=funcs, type_ignores=[]), 'radar-functions', 'exec'), env)
     return env, requests
 
@@ -123,6 +124,42 @@ class ScraperTests(unittest.TestCase):
             env, _ = radar_functions(directory)
             env['fetch_radar_snapshot'] = Mock(side_effect=[(202609101200,None,False), RuntimeError('404'), RuntimeError('404')])
             self.assertTrue(env['scrape_once'](('70km',)))
+
+    def test_success_crossing_boundary_requests_fast_retry(self):
+        env, _ = radar_functions('.')
+        # Request starts before 14:05, completes after it with the 14:00 image.
+        env['fetch_radar_snapshot'] = Mock(return_value=(202609221400, None, False))
+        env['datetime_now_str'].return_value = 202609221405
+        self.assertTrue(env['scrape_once'](('240km',)))
+
+    def test_history_repair_crossing_midnight_requests_fast_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env, _ = radar_functions(directory)
+            env['datetime_now_str'].return_value = 202609222355
+            def fetch(name, tick=None, **kwargs):
+                if tick is None:
+                    return 202609222355, None, False
+                env['datetime_now_str'].return_value = 202609230000
+                return tick, None, False
+            env['fetch_radar_snapshot'] = Mock(side_effect=fetch)
+            self.assertTrue(env['scrape_once'](('70km',)))
+
+    def test_loop_recovers_from_boundary_lag_without_five_minute_sleep(self):
+        env, _ = radar_functions('.')
+        tree = ast.parse((ROOT/'src/scraping/rain_areas.py').read_text())
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+                 and n.name in {'run_scraper_forever', 'fallback_sleep_seconds'}]
+        env.update(FETCH_INTERVAL_SECONDS=300, queue=queue,
+                   sleep_until_next_five_minute_boundary=Mock(side_effect=StopIteration))
+        env['datetime_now_str'].return_value = 202609221405
+        env['fetch_radar_snapshot'] = Mock(side_effect=[
+            (202609221400,None,False), (202609221405,None,False)])
+        exec(compile(ast.Module(body=nodes,type_ignores=[]),'scraper-loop','exec'),env)
+        with self.assertRaises(StopIteration):
+            env['run_scraper_forever'](('240km',), file_ready_queue=queue.Queue())
+        self.assertEqual(env['fetch_radar_snapshot'].call_count, 2)
+        env['time'].sleep.assert_called_once_with(15.0)
+        env['sleep_until_next_five_minute_boundary'].assert_called_once()
 
     def test_either_arrival_order_builds_once(self):
         for order in [('radar', 'weather'), ('weather', 'radar')]:

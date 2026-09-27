@@ -59,12 +59,14 @@ def fallback_sleep_seconds(offset_hours: int = SG_OFFSET_HOURS) -> float:
 def scrape_once(img_names: tuple[str, ...] = ("70km", "240km"), file_ready_queue=None) -> bool:
     """Fetch one pass of radar images.
 
-    Returns True if any image had to fall back to an earlier tick.
+    Returns True when a failure, history gap or outdated frame needs a fast retry.
     """
     fell_back_any = False
+    captured = {}
     for img_name in img_names:
         try:
             dt, _, fell_back = fetch_radar_snapshot(img_name)
+            captured[img_name] = dt
             print(f"Captured {img_name} {dt}")
             if img_name == "70km" and file_ready_queue is not None:
                 file_ready_queue.put(dt)
@@ -89,6 +91,16 @@ def scrape_once(img_names: tuple[str, ...] = ("70km", "240km"), file_ready_queue
                         fell_back_any = True
         except Exception as exc:
             print(f"Failed to capture {img_name}: {exc}")
+            fell_back_any = True
+    # A successful request can cross a five-minute boundary. Check after the
+    # entire pass (including history recovery), not only at request start.
+    current_tick = datetime_now_str(offset_hours=SG_OFFSET_HOURS)
+    for img_name, captured_tick in captured.items():
+        if captured_tick < current_tick:
+            lag = (datetime.strptime(str(current_tick), "%Y%m%d%H%M")
+                   - datetime.strptime(str(captured_tick), "%Y%m%d%H%M")).total_seconds()
+            print(f"Radar behind current tick: {img_name} captured={captured_tick} "
+                  f"current={current_tick} lag={int(lag)}s; retrying in 15s")
             fell_back_any = True
     return fell_back_any
 
