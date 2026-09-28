@@ -6,6 +6,21 @@
 venv/
 data/
 userdata.csv
+*.sqlite3
+*.sqlite3-*
+
+# Local assistant context and isolated checkouts
+/.push-*/
+/memory/
+/AGENTS.md
+/SOUL.md
+/USER.md
+/IDENTITY.md
+/MEMORY.md
+/BOOTSTRAP.md
+/AGENT_HANDOFF.md
+/PUSH_PLAN.md
+/STEP4_MODEL_IMPROVEMENTS.md
 
 # Python, test, and notebook caches
 __pycache__/
@@ -17,14 +32,21 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+*.egg-info/
+/build/
+/dist/
 
 # Generated training artifacts (already tracked models remain tracked)
 runs/
 /models/
-/src/model_*
+/src/model_*.pkl
+/src/model_*.pt
+/src/model_*.pth
 
 # Generated evaluation outputs
 *.log
+*.log.*
+/logs/
 /reports/
 /heldout_test_metadata.json
 /heldout_test_results.json
@@ -37,5 +59,3 @@ runs/
 .DS_Store
 Thumbs.db
 Desktop.ini
-
-/logs/

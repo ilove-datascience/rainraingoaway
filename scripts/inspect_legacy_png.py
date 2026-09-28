@@ -1,47 +1,34 @@
-"""Test runner for PNG intensity extraction and grid reconstruction.
+"""Inspect the legacy 0–100 colour decoder; not the source-aware training codec.
 
-Place the PNG you attached at the repository root as `test_input.png`, or pass a path as the first argument.
-Install runtime dependencies if needed:
-
-pip install pillow
-
-Run:
-
-python test_pngtojson.py [path/to/image.png]
+Run from the repository root:
+    python scripts/inspect_legacy_png.py path/to/image.png
+Outputs go to ignored reports/png-inspection/ unless --output-dir is supplied.
 """
 
+import argparse
 from pathlib import Path
 import sys
 import json
 
-from PIL import Image
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'src'))
 
-from data.pngtojson import (
+from data_processing.pngtojson import (
     png_to_intensity_grid,
     png_to_xy_intensity,
     points_to_intensity_grid,
 )
 
 
-def load_png_as_dict(path: Path):
-    img = Image.open(path).convert("RGBA")
-    width, height = img.size
-    pixels = list(img.getdata())
-    data = []
-    for r, g, b, a in pixels:
-        data.extend([r, g, b, a])
-
-    return {"width": width, "height": height, "data": data}
-
-
 def main():
-    path = Path("test_input.png")
-    if len(sys.argv) > 1:
-        path = Path(sys.argv[1])
-
-    if not path.exists():
-        print(f"PNG not found: {path}. Save the attached PNG as {path} or pass its path as an argument.")
-        sys.exit(2)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('image', type=Path, help='PNG to inspect with the legacy decoder')
+    parser.add_argument('--output-dir', type=Path, default=ROOT / 'reports/png-inspection')
+    args = parser.parse_args()
+    path = args.image
+    if not path.is_file():
+        parser.error(f'PNG not found: {path}')
+    args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # Use the simpler grid-based intensity extraction
     grid = png_to_intensity_grid(path)
@@ -56,7 +43,7 @@ def main():
 
     # Also write a JSON of xy-intensity points (non-zero only)
     points = png_to_xy_intensity(path, include_zero=False)
-    out_path = Path("test_output_points.json")
+    out_path = args.output_dir / "points.json"
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(points, f)
 
@@ -64,7 +51,7 @@ def main():
 
     # Reconstruct the simple grid representation from the points file.
     recon_grid = points_to_intensity_grid(points, width=w, height=h)
-    grid_out_path = Path("test_output_grid.json")
+    grid_out_path = args.output_dir / "grid.json"
     with grid_out_path.open("w", encoding="utf-8") as f:
         json.dump(recon_grid, f)
 

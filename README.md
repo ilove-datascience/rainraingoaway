@@ -20,6 +20,8 @@ load an arrival model.
 | `src/evaluation/` | Offline forecast and notification diagnostics |
 | `scripts/` | Evaluation, replay, smoke checks, and notebook tooling |
 | `tests/` | Automated regression tests |
+| `tests/fixtures/` | Small, versioned test examples; not live weather or training archives |
+| `docs/` | Deployment documentation and clearly labelled historical notes in `docs/archive/` |
 | `models/` | Checkpoints and normalization; some existing files are tracked |
 | `data/` | Local radar/weather data, caches, and bot preferences; ignored by Git |
 | `reports/` | Generated evaluation outputs; ignored by Git |
@@ -51,7 +53,13 @@ dependency; install it separately if you want to use the notebooks.
 
 ### 1. Configure the environment
 
-Create `.env` in the repository root:
+Copy the template to `.env` in the repository root, then fill in your credentials:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Keep an existing `.env` rather than overwriting it. The required settings are:
 
 ```dotenv
 tele_api_key=YOUR_TELEGRAM_BOT_TOKEN
@@ -74,10 +82,14 @@ Keep `.env` private. It is ignored by Git. Restart the bot after changing it.
 
 ### 2. Prepare MySQL
 
-The bot requires an existing MySQL database with the base `users` and
-`user_location` tables. This repository does not include a complete fresh-database
-installer: restore your existing bot database/schema before running it on a new
-machine. Merely setting `MYSQL_DATABASE` does not create the database.
+The bot requires an existing MySQL database. Restore your existing bot database
+when moving machines to preserve users, locations, and notification state.
+Merely setting `MYSQL_DATABASE` does not create the database.
+
+For a new empty database, `uv run python scripts/run_bot_service.py --init-db`
+creates the base tables and runs the additive migration. Use a schema-administrator
+account for this one-off command; it does not start polling. Docker instructions,
+including the optional fresh database service, are in [the deployment guide](docs/docker-bot.md).
 
 After the base tables exist, run the additive rain-state migration:
 
@@ -324,7 +336,7 @@ at import time. They are development tools, not bot startup steps.
 ## Tests
 
 ```powershell
-uv run python -m pytest tests -q
+uv run python -m pytest -q
 ```
 
 Focused bot-style and heartbeat checks:
@@ -356,6 +368,24 @@ artifacts are ignored; already-tracked checkpoints remain tracked despite the
 Keep changes and tests grouped by topic. Do not commit credentials, private chat
 data, or generated caches. Include data and model prerequisites with evaluation
 instructions, and distinguish integration checks from forecasting-quality results.
+
+Keep notebook code and explanatory Markdown in Git; save generated charts, model
+results and executed notebook copies under ignored `reports/` or the matching
+model-run directory. Committed notebooks have outputs and execution counts cleared.
+Historical plans live in [docs/archive](docs/archive/README.md); they are not current
+deployment instructions. Runtime map assets stay at the root because the bot uses
+those paths. Existing model checkpoints are retained with their matching normalization.
+
+The standalone legacy PNG diagnostic lives in `scripts/inspect_legacy_png.py`:
+
+```powershell
+uv run python scripts/inspect_legacy_png.py tests/fixtures/radar/example_240km.png
+```
+
+It writes `points.json` and `grid.json` to ignored `reports/png-inspection/`.
+Its legacy 0–100 colour scale is separate from the source-aware model data contract.
+Automated tests are discovered only in `tests/`; local worktrees and research
+notebooks are not collected as tests.
 
 ### Runtime logs
 
