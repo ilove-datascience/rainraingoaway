@@ -6,7 +6,7 @@ import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from evaluation.notification_replay import replay_location
 from evaluation.rain_diagnostics import region_diagnostics
-from telegram_code.rain_state import START,ENDING,ENDED
+from telegram_code.rain_state import START,ENDED
 from telegram_code.notification_text import rain_notice
 
 
@@ -17,8 +17,8 @@ class ReplayTests(unittest.TestCase):
 
     def test_episode_clear_and_onset_scoring(self):
         alerts,onsets=replay_location(self.records([(0,.2),(.2,0),(.2,.2),(0,0),(0,0),(0,0),(0,0)]))
-        self.assertEqual([a['reason'] for a in alerts],[START,ENDING,ENDED])
-        self.assertTrue(alerts[1]['premature_clear'])
+        self.assertEqual([a['reason'] for a in alerts],[START,ENDED])
+        self.assertFalse(alerts[1]['actual_rain'])
         self.assertTrue(onsets[0]['warned_in_horizon'])
         self.assertEqual(onsets[0]['warning_lead_minutes'],5)
 
@@ -29,9 +29,9 @@ class ReplayTests(unittest.TestCase):
         self.assertEqual(onsets,[])
         self.assertIsNone(alerts[0]['future_rain'])
 
-    def test_true_predicted_clear(self):
+    def test_predicted_clear_is_silent_until_radar_confirms(self):
         alerts,_=replay_location(self.records([(0,.2),(.2,0),(0,0)]))
-        self.assertFalse(alerts[1]['premature_clear'])
+        self.assertEqual([a['reason'] for a in alerts], [START])
 
     def test_stratification_preserves_targets_and_false_alarms(self):
         target=np.zeros((10,10));target[0,0]=.2;target[5:8,5:8]=.2

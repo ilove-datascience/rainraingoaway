@@ -1,6 +1,7 @@
 """Group-location handler checks plus opt-in MySQL tests using temporary tables only."""
 import ast
 import asyncio
+import json
 from datetime import datetime, timedelta
 from io import BytesIO
 import os
@@ -161,14 +162,15 @@ class GroupDatabaseTests(unittest.TestCase):
         proxy = SimpleNamespace(cursor=self.conn.cursor, commit=self.conn.commit,
                                 rollback=self.conn.rollback, close=lambda: None,
                                 is_connected=self.conn.is_connected)
-        self.env = dict(_get_db_connection=lambda: proxy, secrets=secrets, MAX_CHAT_LOCATIONS=6)
+        self.env = dict(_get_db_connection=lambda: proxy, secrets=secrets, MAX_CHAT_LOCATIONS=6, json=json)
         functions('src/telegram_code/rain_state_db.py', self.env)
         self.env['ensure_rain_state_schema']()
         self.env['ensure_rain_state_schema']()  # Re-running migration must be safe.
         functions('src/telegram_code/group_locations.py', self.env)
         functions('src/telegram_code/notification_delivery.py', self.env,
-                  {'claim_notification', 'finish_notification', 'release_episode', 'recover_abandoned_notifications'})
-        self.env['ENDED'] = 'ended'
+                  {'claim_notifications', 'claim_notification', 'finish_notification', 'release_episode', 'recover_abandoned_notifications'})
+        from telegram_code import rain_state
+        self.env.update({name: getattr(rain_state, name) for name in ('START', 'ENDED', 'OBSERVED', 'CANCELLED', 'ENDING')})
         self.env['timedelta'] = timedelta
         cur = self.conn.cursor()
         for chat in (-1001, -1002, 42):
@@ -179,6 +181,30 @@ class GroupDatabaseTests(unittest.TestCase):
 
     def tearDown(self):
         self.conn.close()  # MySQL automatically drops only this session's temporary tables.
+
+    def queue_notice(self, chat, reason, observed, location_id=0, available_at=None):
+        row = next(r for r in self.env['get_rain_locations']()
+                   if r['userid'] == chat and r['location_id'] == location_id)
+        wet = reason == self.env['OBSERVED']
+        predicted = reason == self.env['START']
+        result = dict(state='confirmed' if wet else 'predicted' if predicted else 'predicted norain',
+                      rain_observed_at=observed, rain_forecast_at=observed+timedelta(minutes=5),
+                      radar_raining=wet, rain_forecast_value=.2 if predicted else None,
+                      reason=reason)
+        self.assertTrue(self.env['save_rain_state'](row, result, row['label'], available_at or observed))
+        cur = self.conn.cursor()
+        cur.execute('SELECT id FROM rain_notifications WHERE userid=%s AND location_id=%s ORDER BY id DESC LIMIT 1',
+                    (chat, location_id))
+        notification_id = cur.fetchone()[0]
+        cur.close()
+        return notification_id
+
+    def notification_statuses(self):
+        cur = self.conn.cursor()
+        cur.execute('SELECT id,status,telegram_message_id FROM rain_notifications ORDER BY id')
+        rows = {row[0]: row[1:] for row in cur.fetchall()}
+        cur.close()
+        return rows
 
     def test_six_location_cap_includes_main_and_recovers_after_removal(self):
         for index in range(5):
@@ -241,6 +267,152 @@ class GroupDatabaseTests(unittest.TestCase):
         self.assertIsNone(self.env['claim_notification'](now))
         self.assertTrue(self.env['add_named_location'](-1001, 'Office', 1.35, 103.9))
         self.assertIsNone(self.env['claim_notification'](now))
+
+    def test_grouped_claim_acknowledges_each_location_with_one_message_id(self):
+        self.env['add_named_location'](-1001, 'Office', 1.35, 103.9)
+        now = datetime(2026, 9, 28, 12)
+        ids = []
+        for location in self.env['list_locations'](-1001):
+            ids.append(self.queue_notice(-1001, self.env['OBSERVED'], now, location['location_id']))
+        other = self.queue_notice(-1002, self.env['OBSERVED'], now)
+        items = self.env['claim_notifications'](now)
+        self.assertEqual([item['id'] for item in items], ids)
+        self.assertTrue(all(item['first_today'] for item in items))
+        for item in items:
+            self.env['finish_notification'](item, 'sent', now, 777)
+        statuses = self.notification_statuses()
+        self.assertTrue(all(statuses[event_id] == ('sent', 777) for event_id in ids))
+        self.assertEqual(statuses[other], ('pending', None))
+        locations = [r for r in self.env['get_rain_locations']() if r['userid'] == -1001]
+        self.assertTrue(all(r['rain_alert_at'] == now and r['rain_alert_reason'] == self.env['OBSERVED'] for r in locations))
+
+    def test_removing_one_location_excludes_only_its_pending_notice(self):
+        self.env['add_named_location'](-1001, 'Office', 1.35, 103.9)
+        office = next(r for r in self.env['list_locations'](-1001) if r['label'] == 'Office')
+        now = datetime(2026, 9, 28, 12)
+        main_id = self.queue_notice(-1001, self.env['OBSERVED'], now)
+        office_id = self.queue_notice(-1001, self.env['OBSERVED'], now, office['location_id'])
+        scope = sorted([r['location_id'], r['rain_settings_version']]
+                       for r in self.env['get_rain_locations']() if r['userid'] == -1001)
+        cur = self.conn.cursor()
+        cur.execute('UPDATE rain_notifications SET message=%s,photo=%s WHERE id=%s',
+                    (json.dumps({'rain_alert': 1, 'photo_locations': scope}), b'combined-map', main_id))
+        self.conn.commit()
+        cur.close()
+        self.assertTrue(self.env['remove_named_location'](-1001, 'Office'))
+        claimed = self.env['claim_notifications'](now)
+        self.assertEqual([item['id'] for item in claimed], [main_id])
+        self.assertIsNone(claimed[0]['photo'])  # Do not expose the removed location's saved marker.
+        self.assertEqual(self.notification_statuses()[office_id], ('cancelled', None))
+
+    def test_unchanged_saved_locations_keep_the_shared_map(self):
+        now = datetime(2026, 9, 28, 12)
+        event_id = self.queue_notice(-1001, self.env['OBSERVED'], now)
+        row = next(r for r in self.env['get_rain_locations']() if r['userid'] == -1001)
+        cur = self.conn.cursor()
+        cur.execute('UPDATE rain_notifications SET message=%s,photo=%s WHERE id=%s',
+                    (json.dumps({'rain_alert': 1, 'photo_locations': [[0, row['rain_settings_version']]]}),
+                     b'combined-map', event_id))
+        self.conn.commit()
+        cur.close()
+        claimed = self.env['claim_notifications'](now)
+        self.assertEqual(claimed[0]['photo'], b'combined-map')
+
+    def test_expired_clear_keeps_forecast_rearm_until_fifteen_minutes(self):
+        from telegram_code.rain_state import next_rain_state
+        now = datetime(2026, 9, 28, 12)
+        for chat, reason in [(-1001, self.env['ENDED']), (-1002, self.env['CANCELLED'])]:
+            with self.subTest(reason=reason):
+                event_id = self.queue_notice(chat, reason, now)
+                cur = self.conn.cursor()
+                cur.execute('UPDATE user_location SET rain_dry_since=%s WHERE userid=%s AND location_id=0',
+                            (now-timedelta(minutes=15), chat))
+                self.conn.commit()
+                cur.close()
+                self.assertEqual(self.env['claim_notifications'](now+timedelta(minutes=10)), [{'cancelled': True}])
+                self.assertEqual(self.notification_statuses()[event_id], ('cancelled', None))
+                row = next(r for r in self.env['get_rain_locations']() if r['userid'] == chat)
+                self.assertEqual(row['rain_episode_reason'], reason)
+                self.assertEqual(row['rain_dry_since'], now-timedelta(minutes=15))
+                early = next_rain_state(row, .2, 0, now+timedelta(minutes=10), now+timedelta(minutes=15))
+                self.assertIsNone(early['reason'])
+                allowed = next_rain_state(row, .2, 0, now+timedelta(minutes=15), now+timedelta(minutes=20))
+                self.assertEqual(allowed['reason'], self.env['START'])
+
+    def test_new_rain_supersedes_pending_clear_without_sending_both(self):
+        now = datetime(2026, 9, 28, 12)
+        clear = self.queue_notice(-1001, self.env['ENDED'], now)
+        start = self.queue_notice(-1001, self.env['OBSERVED'], now+timedelta(minutes=5))
+        claimed = self.env['claim_notifications'](now+timedelta(minutes=5))
+        self.assertEqual([item['id'] for item in claimed], [start])
+        self.assertEqual(self.notification_statuses()[clear], ('cancelled', None))
+        row = next(r for r in self.env['get_rain_locations']() if r['userid'] == -1001)
+        self.assertEqual(row['rain_episode_reason'], self.env['OBSERVED'])
+
+    def test_first_today_is_per_chat_and_resets_next_day(self):
+        now = datetime(2026, 9, 28, 12)
+        self.queue_notice(-1001, self.env['OBSERVED'], now)
+        first = self.env['claim_notifications'](now)[0]
+        self.assertTrue(first['first_today'])
+        self.env['finish_notification'](first, 'sent', now, 777)
+        self.queue_notice(-1001, self.env['ENDED'], now+timedelta(minutes=5))
+        second = self.env['claim_notifications'](now+timedelta(minutes=5))[0]
+        self.assertFalse(second['first_today'])
+        self.env['finish_notification'](second, 'sent', now+timedelta(minutes=5), 778)
+        self.queue_notice(-1002, self.env['OBSERVED'], now+timedelta(minutes=5))
+        other = self.env['claim_notifications'](now+timedelta(minutes=5))[0]
+        self.assertTrue(other['first_today'])
+        self.env['finish_notification'](other, 'sent', now+timedelta(minutes=5), 779)
+        tomorrow = now+timedelta(days=1)
+        self.queue_notice(-1001, self.env['OBSERVED'], tomorrow)
+        self.assertTrue(self.env['claim_notifications'](tomorrow)[0]['first_today'])
+
+    def test_blocked_and_uncertain_receipts_do_not_repeat_first_today(self):
+        now = datetime(2026, 9, 28, 12)
+        for chat, outcome in [(-1001, 'sending'), (-1002, 'uncertain')]:
+            with self.subTest(outcome=outcome):
+                self.queue_notice(chat, self.env['OBSERVED'], now)
+                first = self.env['claim_notifications'](now)[0]
+                if outcome == 'uncertain':
+                    self.env['finish_notification'](first, outcome, now)
+                # Protected receipts model Telegram success with a blocked DB ack.
+                at = now+timedelta(minutes=16) if outcome == 'sending' else now+timedelta(minutes=5)
+                if outcome == 'sending':
+                    self.env['recover_abandoned_notifications'](at, (first['id'],))
+                self.queue_notice(chat, self.env['ENDED'], at)
+                next_batch = self.env['claim_notifications'](at)
+                self.assertFalse(next_batch[0]['first_today'])
+
+    def test_abandoned_uncertain_attempt_does_not_repeat_daily_outlook(self):
+        now = datetime(2026, 9, 28, 12)
+        self.queue_notice(-1001, self.env['OBSERVED'], now)
+        first = self.env['claim_notifications'](now)[0]
+        self.assertTrue(first['first_today'])
+        self.env['finish_notification'](first, 'uncertain', now)
+        later = now+timedelta(minutes=16)
+        self.env['recover_abandoned_notifications'](later)
+        self.assertEqual(self.notification_statuses()[first['id']], ('abandoned', None))
+        self.queue_notice(-1001, self.env['OBSERVED'], later)
+        claimed = self.env['claim_notifications'](later)
+        self.assertFalse(claimed[0]['first_today'])
+
+    def test_rate_limited_group_retry_keeps_other_location_and_latest_change(self):
+        self.env['add_named_location'](-1001, 'Office', 1.35, 103.9)
+        now = datetime(2026, 9, 28, 12)
+        original_ids = []
+        for location in self.env['list_locations'](-1001):
+            original_ids.append(self.queue_notice(-1001, self.env['OBSERVED'], now, location['location_id']))
+        original = self.env['claim_notifications'](now)
+        for item in original:
+            self.env['finish_notification'](item, 'pending', now, retry_seconds=30)
+        latest = self.queue_notice(-1001, self.env['ENDED'], now+timedelta(minutes=5))
+        claimed = self.env['claim_notifications'](now+timedelta(minutes=5))
+        self.assertEqual({item['id'] for item in claimed}, {original_ids[1], latest})
+        self.assertEqual(self.notification_statuses()[original_ids[0]], ('cancelled', None))
+        self.assertTrue(all(item['first_today'] for item in claimed))
+        for item in claimed:
+            self.env['finish_notification'](item, 'sent', now+timedelta(minutes=5), 888)
+        self.assertTrue(all(self.notification_statuses()[item['id']] == ('sent', 888) for item in claimed))
 
 
 

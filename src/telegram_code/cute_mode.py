@@ -39,7 +39,11 @@ def cat_text(text, limit):
     if not text:
         return text
     title = text.split('\n', 1)[0]
-    if 'DELAYED' in title or 'UNAVAILABLE' in title:
+    if title == 'Rain update':
+        lines = ('Your weather cat is keeping an eye on the sky. 🐱',
+                 'A little weather note from my window to yours. 🐾',
+                 'Whiskers on weather duty, meow. 🐈')
+    elif 'DELAYED' in title or 'UNAVAILABLE' in title:
         lines = ('My weather whiskers need a moment. Please try again soon, meow! 🐾',
                  'One moment, please—my radar whiskers are untangling. 🐱',
                  'A tiny weather hiccup. Please check back soon, meow. 🐾')

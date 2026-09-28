@@ -91,7 +91,7 @@ async def test_settings_flow_keeps_facts_and_uses_contextual_cat_lines(preferenc
 
 
 def test_each_context_has_variety_and_preserves_original_text():
-    titles = ['RAIN EXPECTED', 'NO RAIN EXPECTED', 'RAIN EXPECTED TO CLEAR',
+    titles = ['Rain update', 'RAIN EXPECTED', 'NO RAIN EXPECTED', 'RAIN EXPECTED TO CLEAR',
               'RAIN CLEARED', 'RAIN DETECTED', 'FORECAST UNAVAILABLE',
               'Current alert setting: automatic.', 'Select mode:',
               'Automatic alerts enabled:', 'Automatic alerts paused.']
@@ -105,3 +105,18 @@ def test_each_context_has_variety_and_preserves_original_text():
             variants.add(styled)
         assert len(variants) == 3
     assert cute_mode.cat_text('Unrecognized message', 4096) == 'Unrecognized message'
+
+
+def test_grouped_rain_update_uses_one_neutral_cat_line():
+    text = ('Rain update\n\n• Home: Rain detected.\n'
+            '• Office: Rain cleared (radar dry for 15 minutes).')
+    for index in range(3):
+        with patch.object(cute_mode.random, 'choice', side_effect=lambda lines: lines[index]):
+            styled = cute_mode.cat_text(text, 1024)
+        assert styled.startswith(text + '\n\n')
+        extra = styled[len(text):].lower()
+        assert 'rain is here' not in extra
+        assert 'rain has' not in extra
+        assert 'no rain' not in extra
+    long_text = text + '\n' + '🌧' * 500
+    assert cute_mode.cat_text(long_text, 1024) == long_text

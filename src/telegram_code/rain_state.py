@@ -3,6 +3,7 @@
 from datetime import timedelta
 
 DRY_CONFIRMATION = timedelta(minutes=15)
+FORECAST_REARM = timedelta(minutes=15)
 
 START = 'Rain is predicted at your location'
 OBSERVED = 'Radar confirms rain at your location'
@@ -10,6 +11,7 @@ ENDING = 'Rain is predicted to end'
 ENDED = 'Radar no longer shows rain at your location'
 CANCELLED = 'Rain is no longer predicted at your location'
 ACTIVE_ALERTS = {START, 'Radar confirms rain at your location', 'Predicted rain has strengthened'}
+CLOSED_ALERTS = {ENDED, CANCELLED}
 
 
 def next_rain_state(previous, forecast_value, actual_value, observed_at, forecast_at):
@@ -21,36 +23,42 @@ def next_rain_state(previous, forecast_value, actual_value, observed_at, forecas
     # Radar uses the dataset's rain threshold; forecast uses the bot's gated threshold.
     wet = actual_value > 0.01
     predicted = None if forecast_value is None else forecast_value >= 0.003
-    state = 'confirmed' if wet else 'predicted'
-    if predicted is False or (predicted is None and not wet):
-        state = 'predicted norain'
+    state = 'confirmed' if wet else ('predicted' if predicted else 'predicted norain')
     reason = None
     last_alert = previous.get('rain_episode_reason') or previous.get('rain_alert_reason')
-    active = last_alert in ACTIVE_ALERTS
+    # ENDING remains readable for episodes saved by an older bot version.
+    active = last_alert in ACTIVE_ALERTS or last_alert == ENDING
     # Four distinct dry frames spanning 15 minutes end an episode. Missing
     # observations break continuity; reprocessing a tick cannot advance time.
     contiguous = old_time is not None and observed_at - old_time <= timedelta(minutes=5)
-    dry_since = previous.get('rain_dry_since') if contiguous else None
+    # After closure, preserve the timer across gaps so its forecast-only rearm
+    # deadline cannot slide forward every time another observation arrives.
+    dry_since = previous.get('rain_dry_since') if contiguous or last_alert in CLOSED_ALERTS else None
     dry_since = None if wet else (dry_since or observed_at)
     dry_confirmed = dry_since is not None and observed_at - dry_since >= DRY_CONFIRMATION
     episode_wet = bool(previous.get('rain_episode_wet') or previous.get('radar_raining')
                        or last_alert in (OBSERVED, ENDING))
     if wet:
         episode_wet = True
-    if not wet and dry_confirmed and predicted is not True and (active or last_alert == ENDING):
-        if episode_wet:
-            reason = ENDED
-        elif predicted is False:
-            reason = CANCELLED
-        if reason:
-            episode_wet = False
-    elif wet and not active and last_alert != ENDING:
+    if not wet and dry_confirmed and active:
+        # Clearance describes observed rain, not the next forecast. This also
+        # retires forecasts that never materialised when the model is offline.
+        # Radar-first and model-first processing must reach the same decision.
+        reason = ENDED if episode_wet else CANCELLED
+        episode_wet = False
+        # Older versions could leave an episode active for a much longer dry
+        # interval. Keep the last confirmed interval so rearm starts at this
+        # closure, not at an earlier time when no clearance was actually sent.
+        dry_since = observed_at - DRY_CONFIRMATION
+    elif wet and not active:
         reason = OBSERVED
-    elif predicted is False and active and wet and last_alert != OBSERVED and not upgrade:
-        reason = ENDING
     elif predicted and not active:
-        # Until clearance is confirmed, this remains the same rain episode.
-        if last_alert != ENDING:
+        # Do not immediately reverse a confirmed closure because a model tick
+        # flickers wet. Actual radar rain above bypasses this short rearm window.
+        # The existing dry timer persists the deadline without another column.
+        rearmed = (last_alert not in CLOSED_ALERTS
+                   or observed_at >= dry_since + DRY_CONFIRMATION + FORECAST_REARM)
+        if rearmed:
             reason = START
             dry_since = None
             episode_wet = wet

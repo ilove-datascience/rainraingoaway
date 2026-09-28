@@ -126,6 +126,7 @@ In a private chat or group with the bot:
 - `/cancel`: cancel setup and clear the buttons.
 - **My forecast**: request a forecast for your saved location.
 - **Current radar** or `/actual`: request the latest radar snapshot.
+- `/weather`: request the official Singapore daily outlook and temperature range.
 - **Change location**: update your saved location.
 - **Alert settings** or `/setmode`: choose automatic or manual updates.
 
@@ -158,9 +159,29 @@ adds location IDs and labels, and extends the location and notification keys.
 Do not run an older bot version once extra locations have been added.
 
 
-Automatic mode sends an alert when rain is predicted, then updates when rain is
-predicted to end or radar shows it has ended. Manual mode pauses automatic alerts.
+Automatic mode sends an alert when rain is predicted or detected, then confirms
+clearance after sustained dry radar. Nearby location changes are grouped into
+one notice per chat. Manual mode pauses automatic alerts.
 Unavailable or stale forecasts can fall back to an actual radar snapshot.
+
+### Daily weather outlook
+
+The first automatic rain notice each Singapore calendar day includes the latest
+available **NEA/MSS Singapore-wide 24-hour outlook**, with its temperature range
+and exact validity window. Use `/weather` any time, including on dry days or in
+manual mode. No extra API key or environment setting is needed.
+
+The source is the [official 24-hour weather forecast on data.gov.sg](https://data.gov.sg/datasets/d_ce2eb1e307bda31993c533285834ef2b/view),
+updated every six hours and additionally when needed. Its 24-hour window can
+cross midnight; it is a national outlook, separate from the bot's local
+five-minute rain prediction. Requests are shared across chats and cached for
+15 minutes. Failed requests back off for five minutes; expired or old-issued
+outlooks are omitted. Rain notices still send when this service is unavailable.
+If it was unavailable for the first notice, `/weather` can be used to try again.
+
+Daily inclusion is checked against the durable notification history, so normal
+restarts do not repeat it. An uncertain delivery also counts as that day's first
+attempt to avoid repeating an outlook that may already have arrived.
 
 ## Telegram cute mode
 
@@ -168,11 +189,14 @@ Send `/cutemode` in a private chat to toggle cat-style messages. This typed comm
 is not listed in the bot's buttons or command menu. Preferences are saved per chat
 in `data/bot_preferences.sqlite3` and survive restarts.
 
-Forecasts and rain alerts randomly choose from several weather-specific lines. Repeats are allowed. Examples:
+Manual forecasts randomly choose from several weather-specific lines. Repeats are allowed. Examples:
 
 - Rain expected: “Rain might be padding over—keep your paws dry, meow! 🐾”
 - No rain expected: “No rain on my whiskers for now, meow! 🐾”
 - Rain cleared: “The rain has padded away, meow! 🐾”
+
+Grouped automatic notices add at most one neutral cat line, so mixed rain and
+clearance updates never imply the same conditions at every location.
 
 Settings prompts and confirmations also get short, context-specific cat lines. For example:
 
@@ -359,12 +383,13 @@ docker compose -f compose.bot.yaml up -d --build
 
 ### Observed-rain alerts and delivery recovery
 
-Automatic alerts also send **RAIN DETECTED** when fresh radar shows rain without
+Automatic alerts also report **Rain detected** when fresh radar shows rain without
 an earlier active rain alert, even if the forecast predicts dry. A separate
 30-second observation job needs only one radar frame less than 10 minutes old;
-it does not require weather inputs or a successful model run. Forecast alerts
-still expire at their forecast time. Existing active rain episodes suppress
-repeat starts, and observed alerts use an actual-radar image and timestamp.
+it does not require model weather inputs or a successful model run. Forecast
+alerts expire at their forecast time; observed notices, including clearance,
+expire ten minutes after their radar observation. Superseded pending changes
+are discarded. Existing active rain episodes suppress repeat starts.
 
 Definitive delivery failures release the episode marker so new observations can
 trigger an alert. Interrupted/uncertain deliveries are never blindly resent:
@@ -378,15 +403,42 @@ rain-alert stability update below for its additive migration.
 
 ### Rain alert stability (September 28 update)
 
-The first rain warning remains immediate. Brief dry readings no longer close an
+The first rain warning does not wait for dry confirmation. Brief dry readings no longer close an
 active rain episode: clearance needs consecutive radar observations spanning
 15 minutes of dry conditions (four five-minute frames). A wet frame resets the
 dry timer; a missing observation breaks the sequence. Timers are stored per saved
-location in MySQL and survive restarts. A dry forecast does not immediately
-contradict a RAIN DETECTED alert, including a forecast for the same radar timestamp.
-This intentionally delays clearance messages to avoid wet/dry alert flapping.
+location in MySQL and survive restarts. Predicted-clear notices are no longer
+sent automatically: both radar-first and model-first processing use confirmed
+dry observations to close an episode. A forecast that never became observed
+rain is also retired after sustained dry radar, even if the model is unavailable.
 
-This update adds `rain_dry_since` and `rain_episode_wet` to `user_location`.
+After closure, forecast-only warnings wait 15 minutes before starting a new
+episode. Fresh observed rain bypasses that wait. This prevents a same-frame
+model update from immediately contradicting a clearance, while retaining actual
+new rain detection.
+
+Changes wait 15 seconds to collect adjacent radar/model results, then the
+30-second delivery jobs claim each chat's eligible locations together. They send
+one notice with one labelled actual-radar map where a shared map is available.
+Forecast lines explicitly give their future time. Long captions or mixed map
+timestamps use one complete text notice instead. Changed/removed saved locations
+invalidate an older queued map. Each location retains its own durable delivery
+receipt, even when the Telegram message is shared.
+
+Example with two locations (illustrative, not live weather):
+
+```text
+Rain update
+
+• Main: Light to Moderate rain detected.
+• Office: Rain cleared (radar dry for 15 minutes).
+
+Radar: 28 Sep, 14:00 SGT
+Intensity is relative to the radar colour scale.
+```
+
+The earlier stability update adds `rain_dry_since` and `rain_episode_wet` to `user_location`.
+Grouping and daily outlooks add no further schema changes.
 After pulling, rebuild and run the existing additive migration before starting:
 
 ```powershell

@@ -33,9 +33,9 @@ from telegram_code.forecast_policy import is_fresh, forecast_text, sg_now
 from telegram_code.rain_state import next_rain_state, should_notify
 from telegram_code.rain_state_db import get_rain_locations, save_rain_state
 from telegram_code.notification_delivery import deliver_notifications, settings_lock
-from telegram_code.notification_text import alert_text, rain_notice, intensity_label
+from telegram_code.notification_text import encode_alert, rain_notice, intensity_label
 from telegram_code.local_rain import local_rain, in_coverage
-from telegram_code.rain_state import ENDED, OBSERVED
+from telegram_code.rain_state import ENDED, OBSERVED, START
 from telegram_code.database import get_user_mode
 
 
@@ -279,8 +279,8 @@ async def receive_mode(update, context):
     if success:
         print('mode updated')
         context.application.bot_data.setdefault("alert_history", {}).pop(userid, None)
-        message = ("Automatic alerts enabled: one when rain is predicted, then only when "
-                   "rain is predicted to end or radar shows it has ended." if mode == "automatic"
+        message = ("Automatic alerts enabled: I'll let you know when rain is expected or detected, "
+                   "then when radar confirms it has cleared. Location updates are grouped together." if mode == "automatic"
                    else "Automatic alerts paused. Use /menu then My forecast whenever you need an update.")
         await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
     else:
@@ -763,6 +763,8 @@ async def _send_auto_update(context, latest_prediction):
     rows = await asyncio.to_thread(get_rain_locations)
     grid = latest_prediction.get("prediction")
     failed = False
+    updates = []
+    photos = {}
     for row in rows:
         try:
             latitude, longitude = float(row["latitude"]), float(row["longitude"])
@@ -774,24 +776,49 @@ async def _send_auto_update(context, latest_prediction):
             if result is None:
                 continue
             message = None
-            photo = None
-            if row['mode'] == 'automatic' and should_notify(row, result) and (result["reason"] == ENDED or is_fresh(latest_prediction)):
-                is_actual = result['reason'] in (ENDED, OBSERVED)
-                value = observed if is_actual else forecast
-                message = alert_text(result["reason"], result["rain_observed_at"], result["rain_forecast_at"], radius, value)
-                message = f"{row.get('label', 'Main')}\n{message}"
-                image_grid = actual if is_actual else grid
-                image_time = result['rain_observed_at'] if is_actual else result['rain_forecast_at']
-                source = 'Actual radar' if is_actual else 'Forecast radar (+5 min)'
-                image = await asyncio.to_thread(render_heatmap, image_grid,
-                                               f'{source} | {image_time:%d %b %H:%M} SGT',
-                                               'Relative radar intensity', marker=marker)
-                photo = image.getvalue()
-                image.close()
-            await asyncio.to_thread(save_rain_state, row, result, message, sg_now(), photo)
+            now = sg_now()
+            fresh_actual = result['rain_observed_at'] <= now < result['rain_observed_at'] + timedelta(minutes=10)
+            fresh = is_fresh(latest_prediction) if result['reason'] == START else fresh_actual
+            if row['mode'] == 'automatic' and should_notify(row, result) and fresh:
+                category = (source_category(observed) if result['reason'] == OBSERVED else
+                            intensity_label(forecast) if result['reason'] == START else None)
+                scope = sorted([saved.get('location_id', 0), saved['rain_settings_version']]
+                               for saved in rows if saved['userid'] == row['userid'])
+                message = encode_alert(row.get('label', 'Main'), result['reason'], category,
+                                       photo_locations=scope)
+            updates.append((row, result, message))
         except Exception as exc:
             failed = True
             print(f"Rain-state update failed for {row['userid']}: {exc}")
+    # One observation map per chat, with every saved location labelled. Sharing
+    # the image lets delivery combine only the events still eligible to send.
+    for row, result, message in updates:
+        if not message or row['userid'] in photos:
+            continue
+        try:
+            chat_rows = sorted([saved for saved in rows if saved['userid'] == row['userid']],
+                               key=lambda saved: saved.get('location_id', 0))
+            image, _ = await asyncio.to_thread(build_group_map, chat_rows, actual,
+                                                result['rain_observed_at'], actual=True)
+            try:
+                photos[row['userid']] = image.getvalue()
+            finally:
+                image.close()
+        except Exception as exc:
+            failed = True
+            photos[row['userid']] = None
+            print(f"Rain-map rendering failed for {row['userid']}: {type(exc).__name__}")
+    # Start the shared collection window after rendering, which can be slow.
+    available_at = sg_now() + timedelta(seconds=15)
+    for row, result, message in updates:
+        if message and photos.get(row['userid']) is None:
+            continue  # Keep this observation retryable rather than losing its alert.
+        try:
+            await asyncio.to_thread(save_rain_state, row, result, message, available_at,
+                                    photos.get(row['userid']) if message else None)
+        except Exception as exc:
+            failed = True
+            print(f"Rain-state save failed for {row['userid']}: {type(exc).__name__}")
     if failed:
         raise RuntimeError("Some location states failed; keeping timestamp for retry")
     return True
