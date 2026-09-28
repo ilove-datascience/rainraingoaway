@@ -372,4 +372,28 @@ after 15 minutes they are marked `abandoned`, logged, and stop suppressing new
 events, provided no newer event/settings change supersedes them. A new event may
 therefore alert again if the original uncertain send actually reached Telegram.
 Known Telegram receipts retry their database acknowledgement without resending.
-No schema migration is needed for this update.
+The delivery-recovery change itself requires no schema migration; see the later
+rain-alert stability update below for its additive migration.
+
+
+### Rain alert stability (September 28 update)
+
+The first rain warning remains immediate. Brief dry readings no longer close an
+active rain episode: clearance needs consecutive radar observations spanning
+15 minutes of dry conditions (four five-minute frames). A wet frame resets the
+dry timer; a missing observation breaks the sequence. Timers are stored per saved
+location in MySQL and survive restarts. A dry forecast does not immediately
+contradict a RAIN DETECTED alert, including a forecast for the same radar timestamp.
+This intentionally delays clearance messages to avoid wet/dry alert flapping.
+
+This update adds `rain_dry_since` and `rain_episode_wet` to `user_location`.
+After pulling, rebuild and run the existing additive migration before starting:
+
+```powershell
+docker compose -f compose.bot.yaml build bot
+docker compose -f compose.bot.yaml run --rm bot --init-db
+docker compose -f compose.bot.yaml up -d bot
+```
+
+The one-off migration requires schema-administrator permissions. Normal bot startup
+only validates the schema; it does not change it. Existing data is preserved.

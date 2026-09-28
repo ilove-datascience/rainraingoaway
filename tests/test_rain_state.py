@@ -59,7 +59,7 @@ class RainStateTests(unittest.TestCase):
         sent = []
         for i, (forecast, actual) in enumerate([
             (.04, 0), (.04, 0), (.1, .03), (0, .03),
-            (.04, .03), (0, .03), (0, 0), (0, 0), (.04, 0),
+            (.04, .03), (0, .03), (0, 0), (0, 0), (0, 0), (0, 0), (.04, 0),
         ]):
             result = self.advance(previous, forecast, actual, i * 5)
             if state.should_notify(previous, result, self.tick):
@@ -70,17 +70,25 @@ class RainStateTests(unittest.TestCase):
 
     def test_unconfirmed_prediction_cancelled_once(self):
         previous = {'rain_alert_reason': state.START, 'state': 'predicted'}
-        result = self.advance(previous, 0, 0)
+        for minute in [0,5,10]:
+            result = self.advance(previous, 0, 0, minute)
+            self.assertIsNone(result['reason'])
+            previous.update(result)
+        result = self.advance(previous, 0, 0, 15)
         self.assertEqual(result['reason'], state.CANCELLED)
         previous.update(result, rain_alert_reason=result['reason'])
-        self.assertIsNone(self.advance(previous, 0, 0, 5)['reason'])
+        self.assertIsNone(self.advance(previous, 0, 0, 20)['reason'])
 
     def test_observed_rain_alerts_when_forecast_misses(self):
         result = self.advance({}, 0, .2)
         self.assertEqual(result['reason'], state.OBSERVED)
         previous = dict(result, rain_episode_reason=state.OBSERVED)
         self.assertIsNone(self.advance(previous, None, .2, 5)['reason'])
-        self.assertEqual(self.advance(previous, None, 0, 5)['reason'], state.ENDED)
+        for minute in [5,10,15]:
+            dry = self.advance(previous, None, 0, minute)
+            self.assertIsNone(dry['reason'])
+            previous.update(dry)
+        self.assertEqual(self.advance(previous, None, 0, 20)['reason'], state.ENDED)
 
     def test_missing_forecast_does_not_cancel_predicted_rain(self):
         previous = {'rain_episode_reason':state.START}
@@ -94,6 +102,51 @@ class RainStateTests(unittest.TestCase):
 
     def test_radar_start_is_not_repeated_after_predicted_start(self):
         self.assertIsNone(self.advance({'rain_episode_reason':state.START}, None, .2)['reason'])
+
+    def test_overnight_flicker_is_one_episode(self):
+        previous = {}
+        sent = []
+        for minute in range(0,240,5):
+            result = self.advance(previous, None, .1 if minute%10==0 else 0, minute)
+            if state.should_notify(previous,result):
+                sent.append(result['reason'])
+                previous['rain_episode_reason'] = result['reason']
+            previous.update(result)
+            # Model returns dry after the radar job for this same timestamp.
+            upgrade = self.advance(previous, 0, .1 if minute%10==0 else 0, minute)
+            if state.should_notify(previous,upgrade):
+                sent.append(upgrade['reason'])
+                previous['rain_episode_reason'] = upgrade['reason']
+            previous.update(upgrade)
+        self.assertEqual(sent,[state.OBSERVED])
+        for minute in [240,245,250]:
+            result = self.advance(previous,None,0,minute)
+            previous.update(result)
+            if result['reason']: sent.append(result['reason'])
+        self.assertEqual(sent,[state.OBSERVED,state.ENDED])
+
+    def test_gap_does_not_count_as_continuous_dry(self):
+        previous = {'rain_episode_reason':state.OBSERVED,'radar_raining':True}
+        previous.update(self.advance(previous,None,0,0))
+        result = self.advance(previous,None,0,60)
+        self.assertIsNone(result['reason'])
+        self.assertEqual(result['rain_dry_since'],self.tick+timedelta(minutes=60))
+
+    def test_observed_start_is_not_immediately_contradicted(self):
+        result = self.advance({},None,.2)
+        previous = dict(result,rain_episode_reason=state.OBSERVED)
+        self.assertIsNone(self.advance(previous,0,.2)['reason'])
+        self.assertIsNone(self.advance(previous,0,.2,5)['reason'])
+
+    def test_distinct_locations_have_independent_dry_timers(self):
+        first = {'rain_episode_reason':state.OBSERVED,'rain_episode_wet':True}
+        second = first.copy()
+        for minute in [0,5,10,15]:
+            a=self.advance(first,None,0,minute)
+            b=self.advance(second,None,.2,minute)
+            first.update(a);second.update(b)
+        self.assertEqual(a['reason'],state.ENDED)
+        self.assertIsNone(b['reason'])
 
 
 if __name__ == '__main__':

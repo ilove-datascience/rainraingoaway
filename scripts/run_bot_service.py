@@ -30,7 +30,7 @@ def validate_schema(cur):
         'user_location': ('userid, latitude, longitude, location_id, label, state, '
                           'rain_observed_at, rain_forecast_at, radar_raining, rain_alert_at, '
                           'rain_alert_reason, rain_forecast_value, rain_alert_value, '
-                          'rain_episode_reason, rain_settings_version'),
+                          'rain_episode_reason, rain_settings_version, rain_dry_since, rain_episode_wet'),
         'rain_notifications': ('id, userid, location_id, settings_version, observed_at, '
                                'forecast_at, reason, message, status, available_at, '
                                'telegram_message_id, photo'),

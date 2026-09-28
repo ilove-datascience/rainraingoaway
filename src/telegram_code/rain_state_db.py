@@ -10,6 +10,8 @@ def ensure_rain_state_schema():
         'rain_observed_at': 'DATETIME NULL',
         'rain_forecast_at': 'DATETIME NULL',
         'radar_raining': 'BOOLEAN NULL',
+        'rain_dry_since': 'DATETIME NULL',
+        'rain_episode_wet': 'BOOLEAN NOT NULL DEFAULT 0',
         'rain_alert_at': 'DATETIME NULL',
         'rain_alert_reason': 'VARCHAR(160) NULL',
         'rain_forecast_value': 'DOUBLE NULL',
@@ -83,13 +85,15 @@ def save_rain_state(row, result, message=None, now=None, photo=None):
             if not user:
                 return False
             cur.execute('''UPDATE user_location SET state=%s, rain_observed_at=%s,
-                rain_forecast_at=%s, radar_raining=%s, rain_forecast_value=%s
+                rain_forecast_at=%s, radar_raining=%s, rain_forecast_value=%s,
+                rain_dry_since=%s, rain_episode_wet=%s
                 WHERE userid=%s AND location_id=%s AND latitude=%s AND longitude=%s
                 AND rain_settings_version=%s
                 AND (rain_observed_at IS NULL OR rain_observed_at < %s
                      OR (rain_observed_at = %s AND rain_forecast_value IS NULL AND %s IS NOT NULL))''',
                 (result['state'], result['rain_observed_at'], result['rain_forecast_at'],
-                 result['radar_raining'], result['rain_forecast_value'], row['userid'], row.get('location_id', 0), row['latitude'], row['longitude'], row['rain_settings_version'], result['rain_observed_at'], result['rain_observed_at'], result['rain_forecast_value']))
+                 result['radar_raining'], result['rain_forecast_value'], result.get('rain_dry_since'),
+                 result.get('rain_episode_wet', result['radar_raining']), row['userid'], row.get('location_id', 0), row['latitude'], row['longitude'], row['rain_settings_version'], result['rain_observed_at'], result['rain_observed_at'], result['rain_forecast_value']))
             changed = cur.rowcount > 0
             if changed and message and user[0] == 'automatic':
                 cur.execute('''INSERT INTO rain_notifications

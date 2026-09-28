@@ -103,7 +103,7 @@ def add_location(userid, lat, long)-> bool:
                     rain_observed_at = NULL, rain_forecast_at = NULL,
                     radar_raining = NULL, rain_alert_at = NULL, rain_alert_reason = NULL,
                     rain_forecast_value = NULL, rain_alert_value = NULL,
-                    rain_episode_reason = NULL, rain_settings_version=rain_settings_version+1
+                    rain_episode_reason = NULL, rain_dry_since=NULL, rain_episode_wet=0, rain_settings_version=rain_settings_version+1
             """,
             (
                 userid,
@@ -158,7 +158,7 @@ def save_mode_choice(userid, mode):
             return False
         if current[0] != mode:
             cursor.execute('UPDATE users SET mode=%s WHERE userid=%s', (mode, userid))
-            cursor.execute('UPDATE user_location SET rain_settings_version=rain_settings_version+1, rain_episode_reason=NULL, rain_alert_reason=NULL WHERE userid=%s', (userid,))
+            cursor.execute('UPDATE user_location SET rain_settings_version=rain_settings_version+1, rain_episode_reason=NULL, rain_alert_reason=NULL, rain_dry_since=NULL, rain_episode_wet=0 WHERE userid=%s', (userid,))
         connection.commit()
         return True
     except Error as exc:

@@ -1,5 +1,9 @@
 """Persistent location rain-state decisions (times are Singapore local time)."""
 
+from datetime import timedelta
+
+DRY_CONFIRMATION = timedelta(minutes=15)
+
 START = 'Rain is predicted at your location'
 OBSERVED = 'Radar confirms rain at your location'
 ENDING = 'Rain is predicted to end'
@@ -23,19 +27,37 @@ def next_rain_state(previous, forecast_value, actual_value, observed_at, forecas
     reason = None
     last_alert = previous.get('rain_episode_reason') or previous.get('rain_alert_reason')
     active = last_alert in ACTIVE_ALERTS
-    if not wet and previous.get('radar_raining') and (active or last_alert == ENDING):
-        reason = ENDED
+    # Four distinct dry frames spanning 15 minutes end an episode. Missing
+    # observations break continuity; reprocessing a tick cannot advance time.
+    contiguous = old_time is not None and observed_at - old_time <= timedelta(minutes=5)
+    dry_since = previous.get('rain_dry_since') if contiguous else None
+    dry_since = None if wet else (dry_since or observed_at)
+    dry_confirmed = dry_since is not None and observed_at - dry_since >= DRY_CONFIRMATION
+    episode_wet = bool(previous.get('rain_episode_wet') or previous.get('radar_raining')
+                       or last_alert in (OBSERVED, ENDING))
+    if wet:
+        episode_wet = True
+    if not wet and dry_confirmed and predicted is not True and (active or last_alert == ENDING):
+        if episode_wet:
+            reason = ENDED
+        elif predicted is False:
+            reason = CANCELLED
+        if reason:
+            episode_wet = False
     elif wet and not active and last_alert != ENDING:
         reason = OBSERVED
-    elif predicted is False and active:
-        reason = ENDING if wet else CANCELLED
+    elif predicted is False and active and wet and last_alert != OBSERVED and not upgrade:
+        reason = ENDING
     elif predicted and not active:
-        # A forecast changing back to wet before rain stops is the same episode.
-        if last_alert != ENDING or not (wet or previous.get('radar_raining')):
+        # Until clearance is confirmed, this remains the same rain episode.
+        if last_alert != ENDING:
             reason = START
+            dry_since = None
+            episode_wet = wet
     # Persist the observation separately: a dry forecast must not erase actual rain.
     return dict(state=state, rain_observed_at=observed_at, rain_forecast_at=forecast_at,
-                radar_raining=wet, reason=reason, rain_forecast_value=forecast_value)
+                radar_raining=wet, reason=reason, rain_forecast_value=forecast_value,
+                rain_dry_since=dry_since, rain_episode_wet=episode_wet)
 
 
 def should_notify(previous, result, now=None):

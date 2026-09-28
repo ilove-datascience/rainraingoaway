@@ -296,3 +296,24 @@ class GroupDatabaseTests(unittest.TestCase):
         row = next(r for r in self.env['get_rain_locations']() if r['userid'] == -1001)
         self.assertEqual(row['rain_episode_reason'], 'start')
         cur.close()
+
+
+    def test_dry_confirmation_survives_database_reload(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('dry_state', ROOT/'src/telegram_code/rain_state.py')
+        state = importlib.util.module_from_spec(spec);spec.loader.exec_module(state)
+        now = datetime(2026,9,28,1,50)
+        for offset, wet in [(0,True),(5,False),(10,False),(15,False),(20,False)]:
+            row = next(r for r in self.env['get_rain_locations']() if r['userid']==-1001)
+            at = now+timedelta(minutes=offset)
+            result = state.next_rain_state(row,None,.2 if wet else 0,at,at+timedelta(minutes=10))
+            expected = state.OBSERVED if offset==0 else state.ENDED if offset==20 else None
+            self.assertEqual(result['reason'],expected)
+            self.env['save_rain_state'](row,result,'alert' if result['reason'] else None,at)
+            saved = next(r for r in self.env['get_rain_locations']() if r['userid']==-1001)
+            self.assertEqual(saved['rain_dry_since'],result['rain_dry_since'])
+            self.assertEqual(bool(saved['rain_episode_wet']),result['rain_episode_wet'])
+        cur=self.conn.cursor()
+        cur.execute('SELECT reason FROM rain_notifications WHERE userid=-1001 ORDER BY id')
+        self.assertEqual([r[0] for r in cur.fetchall()],[state.OBSERVED,state.ENDED])
+        cur.close()

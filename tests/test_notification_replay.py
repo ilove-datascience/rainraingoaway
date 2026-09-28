@@ -16,7 +16,7 @@ class ReplayTests(unittest.TestCase):
                 for i,(a,f) in enumerate(values)]
 
     def test_episode_clear_and_onset_scoring(self):
-        alerts,onsets=replay_location(self.records([(0,.2),(.2,0),(.2,.2),(0,0)]))
+        alerts,onsets=replay_location(self.records([(0,.2),(.2,0),(.2,.2),(0,0),(0,0),(0,0),(0,0)]))
         self.assertEqual([a['reason'] for a in alerts],[START,ENDING,ENDED])
         self.assertTrue(alerts[1]['premature_clear'])
         self.assertTrue(onsets[0]['warned_in_horizon'])
