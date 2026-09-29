@@ -21,7 +21,7 @@ load an arrival model.
 | `scripts/` | Evaluation, replay, smoke checks, and notebook tooling |
 | `tests/` | Automated regression tests |
 | `tests/fixtures/` | Small, versioned test examples; not live weather or training archives |
-| `docs/` | Deployment documentation and clearly labelled historical notes in `docs/archive/` |
+| `docs/` | Deployment documentation |
 | `models/` | Checkpoints and normalization; some existing files are tracked |
 | `data/` | Local radar/weather data, caches, and bot preferences; ignored by Git |
 | `reports/` | Generated evaluation outputs; ignored by Git |
@@ -329,9 +329,9 @@ date range, and report directory are fixed in the script for a specific historic
 comparison. Review those requirements before running either phase; it is not a
 generic fresh-clone evaluation command.
 
-Notebook generators and the historical `add_*`, `fix_*`, `update_*`, `prepare_*`,
-`expand_*`, `harden_*`, and `configure_*` helpers can rewrite notebooks. Some run
-at import time. They are development tools, not bot startup steps.
+Notebook generators can rewrite notebooks. They are development tools, not bot
+startup steps. The old one-off notebook patch scripts have been removed; their
+already-applied changes remain in the notebooks and generator source.
 
 ## Tests
 
@@ -372,8 +372,8 @@ instructions, and distinguish integration checks from forecasting-quality result
 Keep notebook code and explanatory Markdown in Git; save generated charts, model
 results and executed notebook copies under ignored `reports/` or the matching
 model-run directory. Committed notebooks have outputs and execution counts cleared.
-Historical plans live in [docs/archive](docs/archive/README.md); they are not current
-deployment instructions. Runtime map assets stay at the root because the bot uses
+Obsolete development plans and one-off patch scripts remain recoverable in Git
+history. Runtime map assets stay at the root because the bot uses
 those paths. Existing model checkpoints are retained with their matching normalization.
 
 The standalone legacy PNG diagnostic lives in `scripts/inspect_legacy_png.py`:
