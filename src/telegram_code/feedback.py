@@ -198,9 +198,9 @@ def _record_report(token, chat_id, user_id, message_id, raining, now):
         connection.close()
 
 
-async def _answer(query, text):
+async def _answer(query, text=None):
     try:
-        await query.answer(text[:200], show_alert=True)
+        await query.answer(text[:200] if text else None, show_alert=False)
     except Exception as exc:
         logger.warning('Weather feedback acknowledgement failed (%s)', type(exc).__name__)
 
@@ -229,8 +229,8 @@ async def handle_feedback(update, context):
         chat_id = _integer(chat.id, 'chat ID')
         message_id = _integer(message.message_id, 'message ID', minimum=1)
         _, token, condition = data.split(':')
-        snapshot = await asyncio.to_thread(_record_report, token, chat_id, user_id, message_id,
-                                          condition == 'wet', _utc_now())
+        await asyncio.to_thread(_record_report, token, chat_id, user_id, message_id,
+                                condition == 'wet', _utc_now())
     except FeedbackRejected as exc:
         await _answer(query, str(exc))
         return
@@ -241,7 +241,5 @@ async def handle_feedback(update, context):
         logger.warning('Weather feedback could not be saved (%s)', type(exc).__name__)
         await _answer(query, 'Sorry, your report could not be saved. Please try again shortly.')
         return
-    target = snapshot['target_at'].astimezone(SGT)
-    condition_text = 'raining' if condition == 'wet' else 'no rain'
-    await _answer(query, f'Saved: {condition_text} at {snapshot["label"]}, {target:%d %b %H:%M} SGT '
-                        f'({snapshot["kind"]}). Tap the other button to correct your report.')
+    # Clear Telegram's button spinner silently; successful reports need no popup.
+    await _answer(query)

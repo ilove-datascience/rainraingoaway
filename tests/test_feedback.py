@@ -48,6 +48,7 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
         button = markup.inline_keyboard[int(wet)][0]
         update = self.update(button.callback_data, **kwargs)
         await feedback.handle_feedback(update, None)
+        self.assertFalse(update.callback_query.answer.await_args.kwargs['show_alert'])
         return update.callback_query.answer.await_args.args[0]
 
     async def test_frozen_snapshot_and_small_opaque_callbacks(self):
@@ -61,17 +62,18 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((saved['latitude'], saved['longitude'], saved['radius_m']), (1.31, 103.8, 250))
         self.assertEqual(saved['settings_version'], 4)
         self.facts.update(label='Moved', latitude=1.4)
-        self.assertIn('Main', await self.vote(markup))
+        self.assertIsNone(await self.vote(markup))
         self.assertEqual(self.rows('feedback_snapshots')[0]['label'], 'Main')
 
     async def test_repeat_vote_and_correction_replace_only_own_report(self):
         markup = await self.buttons()
-        self.assertIn('Saved: no rain', await self.vote(markup))
+        self.assertIsNone(await self.vote(markup))
         first = self.rows('feedback_reports')[0]
+        self.assertEqual(first['raining'], 0)
         self.now += timedelta(minutes=2)
         await self.vote(markup)
         self.assertEqual(len(self.rows('feedback_reports')), 1)
-        self.assertIn('Saved: raining', await self.vote(markup, wet=True))
+        self.assertIsNone(await self.vote(markup, wet=True))
         corrected = self.rows('feedback_reports')[0]
         self.assertEqual(corrected['raining'], 1)
         self.assertEqual(corrected['first_reported_at'], first['first_reported_at'])
@@ -91,7 +93,7 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Please report then', await self.vote(markup))
         self.assertFalse(self.rows('feedback_reports'))
         self.now = target
-        self.assertIn('Saved:', await self.vote(markup))
+        self.assertIsNone(await self.vote(markup))
         self.now = target + timedelta(minutes=30)
         self.assertIn('closed', await self.vote(markup, wet=True))
         self.assertEqual(self.rows('feedback_reports')[0]['raining'], 0)
@@ -112,7 +114,7 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_naive_singapore_time_matches_aware_utc_time(self):
         markup = await self.buttons(observed_at=datetime(2026, 9, 29, 12),
                                     target_at=datetime(2026, 9, 29, 12))
-        self.assertIn('Saved:', await self.vote(markup))
+        self.assertIsNone(await self.vote(markup))
         self.assertEqual(self.rows('feedback_snapshots')[0]['target_at'], self.now.isoformat())
 
     async def test_forwarded_cross_chat_button_cannot_submit(self):
@@ -158,7 +160,7 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
         restarted._utc_now = lambda: self.now
         update = self.update(markup.inline_keyboard[0][0].callback_data)
         await restarted.handle_feedback(update, None)
-        self.assertIn('Saved:', update.callback_query.answer.await_args.args[0])
+        update.callback_query.answer.assert_awaited_once_with(None, show_alert=False)
         self.assertEqual(len(self.rows('feedback_reports')), 1)
 
     async def test_numbered_full_width_buttons_disambiguate_similar_long_labels(self):
@@ -167,8 +169,10 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
         markup = await feedback.prepare_feedback(-1001, snapshots)
         self.assertTrue(markup.inline_keyboard[0][0].text.startswith('2. Radar'))
         self.assertTrue(markup.inline_keyboard[2][0].text.startswith('3. Radar'))
-        self.assertIn('Very long matching prefix work',
-                      await self.vote(SimpleNamespace(inline_keyboard=markup.inline_keyboard[2:])))
+        self.assertIsNone(await self.vote(SimpleNamespace(inline_keyboard=markup.inline_keyboard[2:])))
+        report = self.rows('feedback_reports')[0]
+        saved = next(row for row in self.rows('feedback_snapshots') if row['token'] == report['token'])
+        self.assertEqual(saved['label'], 'Very long matching prefix work')
 
 
 if __name__ == '__main__':

@@ -10,7 +10,8 @@ you personally observed at that location and time.
   or **Current radar** for a recent update when an old button has expired.
 - Tapping the other button corrects your report. Repeated taps do not create extra
   votes for that message/location. Members of a group can each give their own report;
-  their confirmations do not replace the group's shared buttons.
+  reports do not replace the group's shared buttons. Successful taps save silently;
+  errors use a brief notification, with no modal dialog to dismiss.
 - Saved-location forecasts, shared-location forecasts, actual radar, radar fallbacks,
   and newly generated automatic notices support feedback. A map with no known
   location and old queued notices without location snapshots have no feedback buttons.
