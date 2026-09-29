@@ -37,6 +37,9 @@ from telegram_code.notification_text import encode_alert, rain_notice, intensity
 from telegram_code.local_rain import local_rain, in_coverage
 from telegram_code.rain_state import ENDED, OBSERVED, START
 from telegram_code.database import get_user_mode
+from telegram_code.feedback_context import (
+    forecast_feedback, radar_feedback, location_row, reply_weather_photo, snapshot,
+)
 
 
 # Gated rain-prediction pipeline constants (mirror test_multimodal_convlstm.ipynb).
@@ -317,11 +320,12 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
         return
     context.application.bot_data["latest_prediction"] = prediction
     image, caption = await asyncio.to_thread(build_location_forecast, float(location[0]), float(location[1]), prediction)
+    markup = await forecast_feedback(update.effective_chat.id, location_row(location), prediction)
     if not is_fresh(prediction):
         image.close()
         await send_actual_fallback(update, folder_path, location)
         return
-    await update.message.reply_photo(photo=image, caption=caption, reply_markup=ReplyKeyboardRemove())
+    await reply_weather_photo(update, image, caption, markup)
 
 
 async def run_model(model, folder_path, norm_stats=None, tick=None):
@@ -450,7 +454,7 @@ async def handle_location(
         )
 
     if not is_fresh(latest_prediction):
-        await send_actual_fallback(update, folder_path, (latitude, longitude))
+        await send_actual_fallback(update, folder_path, (latitude, longitude), label='Shared location')
         return
 
     plot_buffer, caption = await asyncio.to_thread(
@@ -459,16 +463,14 @@ async def handle_location(
         longitude,
         latest_prediction
     )
+    markup = await forecast_feedback(update.effective_chat.id,
+                                     location_row((latitude, longitude), 'Shared location'), latest_prediction)
 
     if not is_fresh(latest_prediction):
         plot_buffer.close()
-        await send_actual_fallback(update, folder_path, (latitude, longitude))
+        await send_actual_fallback(update, folder_path, (latitude, longitude), label='Shared location')
         return
-    await update.message.reply_photo(
-        photo=plot_buffer,
-        caption=caption,
-        reply_markup=ReplyKeyboardRemove(),
-    )
+    await reply_weather_photo(update, plot_buffer, caption, markup)
 
 
 def get_latest_radar_png(folder_path) -> Path | None:
@@ -584,7 +586,7 @@ def build_radar_snapshot_plot(png_path, location=None):
     return plot_buffer, caption
 
 
-async def send_actual_fallback(update, folder_path, location):
+async def send_actual_fallback(update, folder_path, location, label='Main'):
     """Respond with a dated observation when no future +5 forecast is usable."""
     latest_png = await asyncio.to_thread(get_latest_radar_png, folder_path)
     if latest_png is None:
@@ -603,8 +605,9 @@ async def send_actual_fallback(update, folder_path, location):
         )
         return
     caption = "FORECAST DELAYED — SHOWING ACTUAL RADAR\n\n" + caption
+    markup = await radar_feedback(update.effective_chat.id, location_row(location, label), latest_png)
     try:
-        await update.message.reply_photo(photo=image, caption=caption, reply_markup=ReplyKeyboardRemove())
+        await reply_weather_photo(update, image, caption, markup)
     finally:
         image.close()
 
@@ -629,8 +632,9 @@ async def handle_actual(
             "ACTUAL RADAR UNAVAILABLE\n\nThe latest radar image could not be decoded. Please try again shortly.",
             reply_markup=ReplyKeyboardRemove())
         return
+    markup = await radar_feedback(update.effective_chat.id, location_row(location), latest_png)
     try:
-        await update.message.reply_photo(photo=plot_buffer, caption=caption, reply_markup=ReplyKeyboardRemove())
+        await reply_weather_photo(update, plot_buffer, caption, markup)
     finally:
         plot_buffer.close()
 
@@ -785,7 +789,12 @@ async def _send_auto_update(context, latest_prediction):
                 scope = sorted([saved.get('location_id', 0), saved['rain_settings_version']]
                                for saved in rows if saved['userid'] == row['userid'])
                 message = encode_alert(row.get('label', 'Main'), result['reason'], category,
-                                       photo_locations=scope)
+                                       photo_locations=scope,
+                                       feedback=snapshot(
+                                           row, 'forecast' if result['reason'] == START else 'radar',
+                                           result['rain_observed_at'],
+                                           result['rain_forecast_at'] if result['reason'] == START else result['rain_observed_at'],
+                                           radar_value=observed, forecast_value=forecast, radius_m=radius))
             updates.append((row, result, message))
         except Exception as exc:
             failed = True
@@ -858,9 +867,9 @@ async def send_group_actual(update, folder_path, rows):
     except (OSError, ValueError):
         await update.message.reply_text('Forecast delayed. Radar image unavailable; try again shortly.', reply_markup=ReplyKeyboardRemove())
         return
+    markup = await radar_feedback(update.effective_chat.id, rows, latest)
     try:
-        await update.message.reply_photo(photo=image, caption='Forecast delayed — showing observations\n'+caption,
-                                         reply_markup=ReplyKeyboardRemove())
+        await reply_weather_photo(update, image, 'Forecast delayed — showing observations\n'+caption, markup)
     finally:
         image.close()
 
@@ -886,9 +895,10 @@ async def handle_group_forecasts(update, context, model, folder_path, norm_stats
         return
     context.application.bot_data['latest_prediction'] = prediction
     image, caption = await asyncio.to_thread(build_group_map, rows, prediction['prediction'], prediction['next_tick'])
+    markup = await forecast_feedback(update.effective_chat.id, rows, prediction)
     try:
         if is_fresh(prediction):
-            await update.message.reply_photo(photo=image, caption=caption, reply_markup=ReplyKeyboardRemove())
+            await reply_weather_photo(update, image, caption, markup)
         else:
             await send_group_actual(update, folder_path, rows)
     finally:

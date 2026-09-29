@@ -176,6 +176,11 @@ clearance after sustained dry radar. Nearby location changes are grouped into
 one notice per chat. Manual mode pauses automatic alerts.
 Unavailable or stale forecasts can fall back to an actual radar snapshot.
 
+Forecast and actual-radar messages now offer **Not raining** and **Raining**
+feedback for the location and time shown on each button. Reports open at that
+time and close after 30 minutes; tapping the other button corrects your report.
+See [feedback and private storage](docs/forecast-feedback.md) for details.
+
 ### Daily weather outlook
 
 The first automatic rain notice each Singapore calendar day includes the latest

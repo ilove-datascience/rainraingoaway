@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 from datetime import datetime, timedelta
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
@@ -13,6 +14,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 # Load native dependencies before patch.dict restores sys.modules after the DB stub.
 from telegram_code.notification_text import encode_alert
 from telegram_code import daily_forecast
+from telegram_code import feedback, feedback_context
 
 
 class RetryAfter(Exception):
@@ -38,6 +40,9 @@ with patch.dict(sys.modules, {
 
 class DeliveryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        clock = patch.object(delivery, 'sg_now', return_value=datetime(2026,9,28,12,0,30))
+        clock.start()
+        self.addCleanup(clock.stop)
         weather = patch.object(delivery, 'get_daily_forecast', AsyncMock(return_value=None))
         weather.start()
         self.addCleanup(weather.stop)
@@ -192,6 +197,101 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(delivery, 'claim_notifications', side_effect=[[self.item], None]), patch.object(delivery, 'finish_notification'):
             await delivery.deliver_notifications(self.context)
         self.assertIn('Main: Light rain detected', self.context.bot.send_message.await_args.kwargs['text'])
+
+    def add_feedback_snapshot(self):
+        frozen = feedback_context.snapshot(
+            dict(latitude=1.31, longitude=103.8, label='Main', location_id=0),
+            'radar', self.item['observed_at'], self.item['observed_at'], radar_value=.22, radius_m=250)
+        self.item['message'] = encode_alert('Main', delivery.OBSERVED, 'Light', feedback=frozen)
+
+    async def test_feedback_is_attached_and_saved_without_altering_delivery_receipt(self):
+        from contextlib import closing
+        from datetime import timezone
+        import sqlite3
+        self.add_feedback_snapshot()
+        now = self.item['observed_at'].replace(tzinfo=feedback.SGT).astimezone(timezone.utc)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(feedback, 'DB_PATH', Path(tmp)/'feedback.sqlite3'), \
+                patch.object(feedback, '_utc_now', return_value=now), \
+                patch.object(delivery, 'claim_notifications', side_effect=[[self.item], None]), \
+                patch.object(delivery, 'finish_notification') as finish:
+            await delivery.deliver_notifications(self.context)
+            kwargs = self.context.bot.send_message.await_args.kwargs
+            self.assertIn(feedback.FEEDBACK_PROMPT, kwargs['text'])
+            self.assertTrue(kwargs['reply_markup'].inline_keyboard[0][0].callback_data.startswith('rainfb:'))
+            with closing(sqlite3.connect(feedback.DB_PATH)) as conn:
+                self.assertEqual(conn.execute('SELECT latitude,longitude,radar_value FROM feedback_snapshots').fetchone(),
+                                 (1.31, 103.8, .22))
+            self.assertEqual(finish.call_args.args[1:4:2], ('sent', 42))
+            self.context.bot.send_message.assert_awaited_once()
+
+    async def test_feedback_database_failure_does_not_lose_weather_notice(self):
+        from datetime import timezone
+        self.add_feedback_snapshot()
+        now = self.item['observed_at'].replace(tzinfo=feedback.SGT).astimezone(timezone.utc)
+        with patch.object(feedback, '_utc_now', return_value=now), \
+                patch.object(feedback, '_store_snapshots', side_effect=OSError('read-only storage')), \
+                patch.object(delivery, 'claim_notifications', side_effect=[[self.item], None]), \
+                patch.object(delivery, 'finish_notification') as finish:
+            await delivery.deliver_notifications(self.context, reply_markup='existing-menu')
+            kwargs = self.context.bot.send_message.await_args.kwargs
+            self.assertEqual(kwargs['reply_markup'], 'existing-menu')
+            self.assertNotIn(feedback.FEEDBACK_PROMPT, kwargs['text'])
+            self.assertEqual(finish.call_args.args[1], 'sent')
+
+    async def test_unexpected_feedback_error_cannot_abandon_claimed_weather(self):
+        with patch.object(delivery, 'notification_feedback', AsyncMock(side_effect=RuntimeError('helper failed'))), \
+                patch.object(delivery, 'claim_notifications', side_effect=[[self.item], None]), \
+                patch.object(delivery, 'finish_notification') as finish:
+            await delivery.deliver_notifications(self.context)
+            self.context.bot.send_message.assert_awaited_once()
+            self.assertEqual(finish.call_args.args[1], 'sent')
+
+    async def test_expiry_during_feedback_preparation_requeues_without_sending_stale_weather(self):
+        async def slow_feedback(*args):
+            delivery.sg_now.return_value = self.item['observed_at'] + timedelta(minutes=10)
+            return None
+        with patch.object(delivery, 'notification_feedback', slow_feedback), \
+                patch.object(delivery, 'claim_notifications', side_effect=[[self.item], None]), \
+                patch.object(delivery, 'finish_notification') as finish:
+            await delivery.deliver_notifications(self.context)
+            self.context.bot.send_message.assert_not_awaited()
+            self.context.bot.send_photo.assert_not_awaited()
+            self.assertEqual(finish.call_args.args[1], 'pending')
+
+    async def test_feedback_prompt_crossing_caption_limit_uses_one_text_delivery(self):
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton('Report', callback_data='fixture')]])
+        self.item['photo'] = b'shared-map'
+        with patch.object(delivery, 'notification_feedback', AsyncMock(return_value=markup)), \
+                patch.object(delivery, 'compose_notice', return_value='x' * 1000), \
+                patch.object(delivery, 'claim_notifications', side_effect=[[self.item], None]), \
+                patch.object(delivery, 'finish_notification') as finish:
+            await delivery.deliver_notifications(self.context)
+            self.context.bot.send_photo.assert_not_awaited()
+            self.context.bot.send_message.assert_awaited_once()
+            kwargs = self.context.bot.send_message.await_args.kwargs
+            self.assertEqual(kwargs['text'], 'x' * 1000 + '\n\n' + feedback.FEEDBACK_PROMPT)
+            self.assertIs(kwargs['reply_markup'], markup)
+            self.assertEqual(finish.call_args.args[1], 'sent')
+
+    async def test_mixed_batch_requeues_then_delivers_only_the_still_fresh_radar(self):
+        from telegram_code.rain_state import START
+        forecast = dict(self.item, id=2, reason=START,
+                        forecast_at=self.item['observed_at'] + timedelta(minutes=5),
+                        message=encode_alert('Office', START, 'Light'))
+        async def prepare(*args):
+            delivery.sg_now.return_value = forecast['forecast_at']
+            return None
+        # The existing claim logic cancels the expired forecast on reclaim.
+        with patch.object(delivery, 'notification_feedback', prepare), \
+                patch.object(delivery, 'claim_notifications', side_effect=[[forecast, self.item], [self.item], None]), \
+                patch.object(delivery, 'finish_notification') as finish:
+            await delivery.deliver_notifications(self.context)
+        self.assertEqual([(call.args[0]['id'], call.args[1]) for call in finish.call_args_list],
+                         [(2, 'pending'), (1, 'pending'), (1, 'sent')])
+        self.context.bot.send_message.assert_awaited_once()
+        self.assertNotIn('Office', self.context.bot.send_message.await_args.kwargs['text'])
+        self.assertIn('Main', self.context.bot.send_message.await_args.kwargs['text'])
 
 
 class ClaimTests(unittest.TestCase):

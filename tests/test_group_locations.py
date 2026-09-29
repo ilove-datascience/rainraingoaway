@@ -98,10 +98,12 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         combined.assert_awaited_once_with(self.update, self.context, None, '.', None)
 
     async def test_group_sends_one_image_and_closes_it(self):
+        from telegram_code.feedback_context import reply_weather_photo
         image = BytesIO(b'group-map')
         prediction = {'prediction': 'grid', 'next_tick': datetime(2026,9,17,12)}
         env = functions('src/telegram_code/methods.py', dict(asyncio=asyncio,
             ReplyKeyboardRemove=lambda: 'removed', list_locations=lambda chat: self.rows,
+            forecast_feedback=AsyncMock(return_value=None), reply_weather_photo=reply_weather_photo,
             is_fresh=bool, build_group_map=Mock(return_value=(image, '1. Main: No rain expected\n2. Office: Rain expected')),
             run_model=AsyncMock(return_value=prediction)), {'handle_group_forecasts'})
         await env['handle_group_forecasts'](self.update, self.context, None, '.')

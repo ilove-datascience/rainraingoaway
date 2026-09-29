@@ -56,12 +56,14 @@ def _intensity_categories(reason):
     return ('No rain', *SOURCE_CATEGORIES) if reason == OBSERVED else ('No rain', 'Light', 'Moderate', 'Heavy')
 
 
-def encode_alert(label, reason, intensity=None, photo_locations=None):
+def encode_alert(label, reason, intensity=None, photo_locations=None, feedback=None):
     """Persist facts so several location events can share one delivery caption."""
     if intensity is not None and intensity not in _intensity_categories(reason):
         raise ValueError('Unknown radar intensity category')
     payload = {'rain_alert': 1, 'label': _location_label(label),
                'reason': reason, 'intensity': intensity}
+    if feedback is not None:
+        payload['feedback'] = feedback
     if photo_locations is not None:
         scope = []
         for pair in photo_locations:

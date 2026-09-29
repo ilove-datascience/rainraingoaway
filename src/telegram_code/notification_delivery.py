@@ -9,6 +9,7 @@ from telegram_code.forecast_policy import sg_now
 from telegram_code.rain_state import ENDED, OBSERVED, CANCELLED, ENDING
 from telegram_code.notification_text import compose_notice
 from telegram_code.daily_forecast import get_daily_forecast, format_daily_forecast
+from telegram_code.feedback_context import notification_feedback, with_feedback_prompt
 
 
 def settings_lock(context):
@@ -171,20 +172,39 @@ async def _deliver_notifications(context, reply_markup=None):
             markup = reply_markup(item['userid']) if callable(reply_markup) else reply_markup
             daily = format_daily_forecast(outlook) if outlook and item.get('first_today') else None
             message = compose_notice(items, outlook=daily)
+            try:
+                feedback = await notification_feedback(item['userid'], items)
+            except Exception as exc:
+                print(f'Optional weather feedback unavailable: {type(exc).__name__}')
+                feedback = None
+            if feedback is not None:
+                markup = feedback
+                message = with_feedback_prompt(message, feedback)
             # A single shared observation map contains all saved location markers.
             # Legacy/mixed timestamps use one text notice rather than an unrelated map.
             photo_bytes = item.get('photo')
             same_photo = photo_bytes and all(other.get('photo') == photo_bytes for other in items)
             use_photo = same_photo and len(message.encode('utf-16-le')) // 2 <= 1024
             try:
-                if use_photo:
+                # Optional storage may have taken long enough for a forecast to
+                # expire. Requeue the batch so normal claiming cancels expired
+                # events and retains still-current locations before any send.
+                send_at = sg_now()
+                expired = any(not event['observed_at'] <= send_at < (
+                    event['observed_at'] + timedelta(minutes=10)
+                    if event['reason'] in (ENDED, OBSERVED, CANCELLED) else event['forecast_at'])
+                    for event in items)
+                if expired:
+                    outcome = ('pending', send_at, None, 0)
+                elif use_photo:
                     with BytesIO(photo_bytes) as photo:
                         photo.name = 'radar.png'
                         sent = await context.bot.send_photo(chat_id=item['userid'], photo=photo,
                                                             caption=message, reply_markup=markup)
+                    outcome = ('sent', sg_now(), sent.message_id, 0)
                 else:
                     sent = await context.bot.send_message(chat_id=item['userid'], text=message, reply_markup=markup)
-                outcome = ('sent', sg_now(), sent.message_id, 0)
+                    outcome = ('sent', sg_now(), sent.message_id, 0)
             except RetryAfter as exc:
                 delay = exc.retry_after.total_seconds() if hasattr(exc.retry_after, 'total_seconds') else float(exc.retry_after)
                 outcome = ('pending', now, None, max(1, delay))

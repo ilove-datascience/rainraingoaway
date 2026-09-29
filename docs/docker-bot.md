@@ -70,6 +70,7 @@ prove fresh forecasts; use logs and the optional existing Kuma heartbeat.
 - `data/environment/`: weather records.
 - `data/multimodal_cache/`: inference cache.
 - `data/bot_preferences.sqlite3`: cute-mode preferences.
+- `data/forecast_feedback.sqlite3`: private user rain reports and their weather/location snapshots; created automatically, with no additional MySQL migration.
 - `logs/`: rotating application logs; Docker logs are also size-limited.
 - Existing MySQL: users, locations, settings and notification state.
 

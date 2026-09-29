@@ -1,12 +1,13 @@
 import logging
 from functools import partial
 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 from telegram.request import HTTPXRequest
 from telegram_code.cute_mode import CuteBot, cutemode
 from telegram_code.group_locations import locations_command, remove_location_command
 from telegram_code.heartbeat import schedule_heartbeat
 from telegram_code.daily_forecast import weather_command
+from telegram_code.feedback import handle_feedback
 
 try:
     from .methods import check_model_queue, check_radar_notifications, handle_actual, handle_location, handle_msg, load_token, start
@@ -45,6 +46,7 @@ def run_bot(model, folder_path, model_ready_queue, norm_stats=None) -> None:
     # Hidden command: registered for typed input only, never added to keyboards/menu.
     app.add_handler(CommandHandler("cutemode", cutemode))
     app.add_handler(CommandHandler("weather", weather_command))
+    app.add_handler(CallbackQueryHandler(handle_feedback, pattern=r'^rainfb:'))
     app.add_handler(get_conversation_handler())
     app.add_handler(CommandHandler("locations", locations_command))
     app.add_handler(MessageHandler(filters.Regex("^Saved locations$"), locations_command))

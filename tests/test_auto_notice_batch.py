@@ -14,6 +14,7 @@ from unittest.mock import Mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from data_processing.radar_codec import source_category
 from telegram_code.forecast_policy import is_fresh
+from telegram_code.feedback_context import snapshot
 from telegram_code.notification_text import encode_alert, intensity_label
 from telegram_code.rain_state import CANCELLED, ENDED, OBSERVED, START, next_rain_state, should_notify
 
@@ -54,7 +55,7 @@ class AutoNoticeBatchTests(unittest.IsolatedAsyncioTestCase):
             sg_now=self.clock, is_fresh=lambda item: is_fresh(item, self.now),
             START=START, OBSERVED=OBSERVED, ENDED=ENDED,
             source_category=source_category, intensity_label=intensity_label,
-            encode_alert=encode_alert, save_rain_state=self.save,
+            encode_alert=encode_alert, snapshot=snapshot, save_rain_state=self.save,
             build_group_map=self.map,
         )
         source = Path(__file__).resolve().parents[1] / 'src/telegram_code/methods.py'
@@ -94,6 +95,10 @@ class AutoNoticeBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item['intensity'] for item in payloads], ['Light', 'Light to Moderate'])
         self.assertTrue(all(item['reason'] == OBSERVED for item in payloads))
         self.assertTrue(all(item['photo_locations'] == [[0, 2], [4, 3]] for item in payloads))
+        self.assertEqual([item['feedback']['location_id'] for item in payloads], [0, 4])
+        self.assertEqual([item['feedback']['radar_value'] for item in payloads], [.22, .37])
+        self.assertTrue(all(item['feedback']['kind'] == 'radar' for item in payloads))
+        self.assertTrue(all(item['feedback']['radius_m'] == 250 for item in payloads))
 
     async def test_distinct_chats_do_not_share_maps_or_photo_scope(self):
         self.rows[1]['userid'] = -1002
@@ -117,9 +122,38 @@ class AutoNoticeBatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.messages()[0], {
             'rain_alert': 1, 'label': 'Main', 'reason': CANCELLED, 'intensity': None,
             'photo_locations': [[0, 2]],
+            'feedback': {
+                'kind': 'radar', 'latitude': 1.31, 'longitude': 103.8, 'label': 'Main',
+                'location_id': 0, 'settings_version': 2,
+                'observed_at': self.observed.isoformat(), 'target_at': self.observed.isoformat(),
+                'radar_value': 0., 'forecast_value': None, 'radius_m': 250,
+                'source': 'automatic_notice',
+            },
         })
         self.map.assert_called_once()
         self.assertTrue(self.map.call_args.kwargs['actual'])
+
+    async def test_mixed_forecast_and_observed_claims_keep_distinct_feedback_times(self):
+        self.actual[1.31] = 0.
+        self.assertTrue(await self.produce())
+        forecast, observed = self.messages()
+        self.assertEqual(forecast['reason'], START)
+        self.assertEqual(observed['reason'], OBSERVED)
+        self.assertEqual(forecast['feedback']['kind'], 'forecast')
+        self.assertEqual(forecast['feedback']['target_at'], self.prediction['next_tick'].isoformat())
+        self.assertEqual(forecast['feedback']['radar_value'], 0.)
+        self.assertEqual(forecast['feedback']['forecast_value'], .2)
+        self.assertEqual(observed['feedback']['kind'], 'radar')
+        self.assertEqual(observed['feedback']['target_at'], self.observed.isoformat())
+        self.assertEqual(observed['feedback']['radar_value'], .37)
+        self.assertEqual(observed['feedback']['forecast_value'], .4)
+        self.assertEqual([forecast['feedback']['radius_m'], observed['feedback']['radius_m']], [250, 250])
+        # The shared picture is actual radar, but must not relabel the future claim.
+        self.assertIs(self.map.call_args.args[1], self.actual)
+        self.assertTrue(self.map.call_args.kwargs['actual'])
+        self.rows[0].update(latitude=1.4, longitude=104., label='Moved')
+        self.assertEqual(self.messages()[0]['feedback']['latitude'], 1.31)
+        self.assertEqual(self.messages()[0]['feedback']['label'], 'Main')
 
     async def test_map_failure_does_not_advance_affected_locations_and_retry_succeeds(self):
         initial = copy.deepcopy(self.rows)
