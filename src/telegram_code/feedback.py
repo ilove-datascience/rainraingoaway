@@ -229,8 +229,8 @@ async def handle_feedback(update, context):
         chat_id = _integer(chat.id, 'chat ID')
         message_id = _integer(message.message_id, 'message ID', minimum=1)
         _, token, condition = data.split(':')
-        await asyncio.to_thread(_record_report, token, chat_id, user_id, message_id,
-                                condition == 'wet', _utc_now())
+        snapshot = await asyncio.to_thread(_record_report, token, chat_id, user_id, message_id,
+                                          condition == 'wet', _utc_now())
     except FeedbackRejected as exc:
         await _answer(query, str(exc))
         return
@@ -241,5 +241,6 @@ async def handle_feedback(update, context):
         logger.warning('Weather feedback could not be saved (%s)', type(exc).__name__)
         await _answer(query, 'Sorry, your report could not be saved. Please try again shortly.')
         return
-    # Clear Telegram's button spinner silently; successful reports need no popup.
-    await _answer(query)
+    # Telegram shows a brief notice only to the reporter, without an OK dialog.
+    condition_text = 'raining' if condition == 'wet' else 'not raining'
+    await _answer(query, f'Saved: {snapshot["label"]} — {condition_text}. Thanks!')
