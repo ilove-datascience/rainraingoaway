@@ -10,7 +10,8 @@ import requests
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest, Forbidden, RetryAfter
 
-from telegram_code.daily_forecast import _sg_time, fetch_scheduled_forecast
+from telegram_code.daily_forecast import _sg_time, fetch_scheduled_forecast, forecast_detail_lines
+from telegram_code.hourly_forecast import hourly_forecast_text
 
 
 DB_PATH = Path(__file__).resolve().parents[2] / 'data' / 'weather_schedule.sqlite3'
@@ -103,14 +104,18 @@ def finish_delivery(key, status, retry_at=None):
                      (status, retry_at.isoformat() if retry_at else None, *key))
 
 
-def format_bulletin(forecast, slot, now):
+def format_bulletin(forecast, slot, now, hourly=None):
     now = _sg_time(now)
     target = now.date() + timedelta(days=slot == 'night')
     title = {'morning': "Today's weather", 'noon': 'Midday weather update',
              'night': "Tomorrow's weather"}[slot]
     start, end = forecast['valid_from'], forecast['valid_until']
+    detail = '\n'.join(forecast_detail_lines(forecast, now, target, include_timeline=not hourly))
+    if hourly:
+        detail = hourly + '\n' + detail
     return (f'{title} · {target:%a %d %b}\n'
             f"{forecast['outlook']}\n{forecast['low']:g}–{forecast['high']:g}°C\n\n"
+            f'{detail}\n\n'
             f'Valid {start:%d %b %H:%M}–{end:%d %b %H:%M} SGT\n'
             f"Singapore-wide · NEA/MSS · Issued {forecast['issued_at']:%d %b %H:%M} SGT\n\n"
             'Manage these updates: /weatheralerts')
@@ -146,13 +151,19 @@ async def send_scheduled_weather(context):
         forecast = await _get_forecast(context, key[1], now)
         if forecast is None:
             continue  # Retry within the window; never invent or send old weather.
+        target = now.date() + timedelta(days=key[1] == 'night')
+        try:
+            hourly = await hourly_forecast_text(context.application.bot_data, int(key[0]), target, now)
+        except Exception as exc:
+            LOGGER.warning('Optional hourly forecast unavailable: %s', type(exc).__name__)
+            hourly = None
         async with _lock(context):
             now = _sg_time()
             if not await asyncio.to_thread(claim_delivery, key, now):
                 continue
             try:
                 await context.bot.send_message(chat_id=int(key[0]),
-                    text=format_bulletin(forecast, key[1], now), disable_web_page_preview=True)
+                    text=format_bulletin(forecast, key[1], now, hourly=hourly), disable_web_page_preview=True)
             except RetryAfter as exc:
                 seconds = exc.retry_after.total_seconds() if hasattr(exc.retry_after, 'total_seconds') else float(exc.retry_after)
                 await asyncio.to_thread(finish_delivery, key, 'pending', _sg_time() + timedelta(seconds=max(1, seconds)))

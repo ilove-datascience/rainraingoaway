@@ -130,6 +130,9 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         fetch = patch.object(module, 'fetch_scheduled_forecast', return_value=forecast())
         self.fetch = fetch.start()
         self.addCleanup(fetch.stop)
+        hourly = patch.object(module, 'hourly_forecast_text', AsyncMock(return_value=None))
+        self.hourly = hourly.start()
+        self.addCleanup(hourly.stop)
 
     def enable(self, chat=42):
         module.set_enabled(chat, True, NOW-timedelta(days=1))
@@ -159,6 +162,41 @@ class ScheduleTests(unittest.IsolatedAsyncioTestCase):
         for hour in (5, 12, 22):
             self.now = NOW.replace(hour=hour)
             await module.send_scheduled_weather(self.context)
+        self.context.bot.send_message.assert_not_awaited()
+
+    async def test_hourly_estimates_use_today_then_tomorrow_for_the_night_slot(self):
+        self.enable()
+        self.hourly.return_value = 'Hourly rain estimates (SGT)\nAround Main\n1 pm–3 pm: rain possible.'
+        for hour in (5, 12, 22):
+            self.now = NOW.replace(hour=hour)
+            await module.send_scheduled_weather(self.context)
+        targets = [call.args[2] for call in self.hourly.await_args_list]
+        self.assertEqual(targets, [NOW.date(), NOW.date(), NOW.date()+timedelta(days=1)])
+        self.assertIn('1 pm–3 pm', self.context.bot.send_message.await_args.kwargs['text'])
+
+    async def test_hourly_failure_cannot_suppress_official_bulletin(self):
+        self.enable()
+        self.hourly.side_effect = RuntimeError('optional provider unavailable')
+        await module.send_scheduled_weather(self.context)
+        self.context.bot.send_message.assert_awaited_once()
+        self.assertIn('NEA/MSS', self.context.bot.send_message.await_args.kwargs['text'])
+
+    async def test_turning_off_while_hourly_fetch_runs_prevents_send(self):
+        self.enable()
+        async def turn_off(*args):
+            module.set_enabled(42, False, NOW)
+            return 'Hourly data'
+        self.hourly.side_effect = turn_off
+        await module.send_scheduled_weather(self.context)
+        self.context.bot.send_message.assert_not_awaited()
+
+    async def test_hourly_delay_cannot_send_after_delivery_window(self):
+        self.enable()
+        async def slow_hourly(*args):
+            self.now += timedelta(minutes=30)
+            return 'Hourly data'
+        self.hourly.side_effect = slow_hourly
+        await module.send_scheduled_weather(self.context)
         self.context.bot.send_message.assert_not_awaited()
 
     async def test_restart_and_parallel_jobs_cannot_repeat_a_sent_bulletin(self):

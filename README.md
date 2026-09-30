@@ -201,13 +201,39 @@ local rain alerts separately. Daily outlooks are no longer appended to rain aler
 Use `/weather` any time for an on-demand outlook, even with scheduled updates off.
 No extra API key or environment setting is needed.
 
+Bulletins and `/weather` now include **hourly rain estimates near each saved
+location**, such as **1 pm–3 pm: rain possible; hourly chance up to 70%**, plus
+the peak hour and forecast millimetres in that hour. This example describes the
+format, not a current forecast. Times are estimates and can shift. Nearby places
+can share the same forecast grid; these estimates are separate from the bot's
+short-range radar alerts.
+
+Hourly data comes from [Open-Meteo](https://open-meteo.com/en/docs), clearly
+labelled separately from the official NEA outlook. Rain windows highlight hours
+with at least 40% precipitation probability or at least 0.1 mm forecast. Adjacent
+hours are grouped; gaps are preserved. Up to three strongest windows are shown
+per location (two when there are more than three saved locations), with any
+omission stated. Noon updates omit completed hours. Probabilities refer to each
+hour, not the chance across the combined window. Open-Meteo timestamps describe
+the preceding hour; the bot accounts for this when displaying time ranges.
+
+Only coordinates rounded to two decimal places are sent to Open-Meteo; chat IDs
+and saved names stay local. With no saved location, a clearly labelled Singapore
+reference point is used. Requests for the same approximate location/day are
+shared, cached for 15 minutes, and backed off for five minutes on failure. Its
+[free API is for non-commercial use](https://open-meteo.com/en/pricing); no paid
+service or account is configured. If hourly data cannot be fetched, the official
+bulletin still sends with NEA's broader time windows when available.
+
 Morning and noon use the [official NEA/MSS 24-hour forecast](https://data.gov.sg/datasets/d_ce2eb1e307bda31993c533285834ef2b/view).
 The night bulletin selects tomorrow's exact date from the
 [official four-day outlook](https://data.gov.sg/datasets/d_f131f6e343bf8168e4057a04c4326a0a/view).
 Before a suitable morning issue is available, the bot can use the prior day's
 four-day issue for today's date. Bulletins show the temperature range, issue time
-and actual validity window; these national forecasts are separate from local
-five-minute rain predictions. A noon bulletin is sent even if NEA's outlook has
+and actual validity window, plus wind and humidity when available. Regional
+time windows are also parsed from NEA and used when hourly estimates are
+unavailable. These national forecasts are separate from local five-minute rain
+predictions. A noon bulletin is sent even if NEA's outlook has
 not changed since morning.
 
 The scheduler checks every minute using Singapore time regardless of the host's

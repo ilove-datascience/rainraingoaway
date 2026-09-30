@@ -57,6 +57,69 @@ def _weather_values(text, temperature):
     return {'outlook': text, 'low': low, 'high': high}
 
 
+REGIONS = ('north', 'south', 'east', 'west', 'central')
+WIND_DIRECTIONS = {
+    'N': 'N', 'NNE': 'NNE', 'NE': 'NE', 'ENE': 'ENE', 'E': 'E', 'ESE': 'ESE',
+    'SE': 'SE', 'SSE': 'SSE', 'S': 'S', 'SSW': 'SSW', 'SW': 'SW', 'WSW': 'WSW',
+    'W': 'W', 'WNW': 'WNW', 'NW': 'NW', 'NNW': 'NNW', 'VRB': 'Variable', 'VARIABLE': 'Variable',
+}
+
+
+def _range(values, maximum):
+    low, high = values['low'], values['high']
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+           for v in (low, high)) or not 0 <= low <= high <= maximum:
+        raise ValueError('Invalid weather range')
+    return low, high
+
+
+def _weather_extras(values):
+    """Optional detail must not invalidate an otherwise usable daily forecast."""
+    extras = {}
+    try:
+        humidity = values['relativeHumidity']
+        if humidity.get('unit') == 'Percentage':
+            extras['humidity'] = _range(humidity, 100)
+    except (KeyError, TypeError, ValueError, AttributeError):
+        pass
+    try:
+        wind = values['wind']
+        if wind.get('direction') in WIND_DIRECTIONS and wind['speed'].get('unit', 'km/h') == 'km/h':
+            extras['wind'] = (WIND_DIRECTIONS[wind['direction']], *_range(wind['speed'], 200))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        pass
+    return extras
+
+
+def _parse_periods(records, forecast):
+    """Use ISO timestamps: upstream display labels can contain incorrect dates."""
+    if not isinstance(records, list) or len(records) > 8:
+        return []
+    periods = []
+    for record in records:
+        try:
+            start = _api_time(record['timePeriod']['start'])
+            end = _api_time(record['timePeriod']['end'])
+            if not forecast['valid_from'] <= start < end <= forecast['valid_until']:
+                continue
+            regions = {}
+            for name in REGIONS:
+                value = record['regions'].get(name)
+                if not isinstance(value, dict) or not isinstance(value.get('text'), str):
+                    continue
+                text = ' '.join(value['text'].split())
+                if text and len(text) <= 80:
+                    regions[name] = text
+            if regions:
+                periods.append({'start': start, 'end': end, 'regions': regions})
+        except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+            continue
+    periods.sort(key=lambda period: period['start'])
+    if any(first['end'] > second['start'] for first, second in zip(periods, periods[1:])):
+        return []  # Contradictory windows do not support a reliable timeline.
+    return periods
+
+
 def parse_daily_forecast(payload, now=None, *, scheduled=False):
     """Return the newest valid outlook, or None for missing/stale/invalid data."""
     now = _sg_time(now)
@@ -77,6 +140,7 @@ def parse_daily_forecast(payload, now=None, *, scheduled=False):
                 'issued_at': _api_time(record['timestamp']),
                 'valid_from': _api_time(general['validPeriod']['start']),
                 'valid_until': _api_time(general['validPeriod']['end']),
+                **_weather_extras(general),
             }
             duration = forecast['valid_until'] - forecast['valid_from']
             current = _current(forecast, now)
@@ -87,6 +151,7 @@ def parse_daily_forecast(payload, now=None, *, scheduled=False):
                            and forecast['valid_from'] <= now + timedelta(hours=2)
                            and forecast['valid_until'] >= now + timedelta(hours=6))
             if timedelta(0) < duration <= timedelta(hours=24) and current:
+                forecast['periods'] = _parse_periods(record.get('periods'), forecast)
                 forecasts.append(forecast)
         except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
             continue
@@ -114,6 +179,7 @@ def parse_dated_outlook(payload, target_date, now=None):
                             **_weather_values(day['forecast'].get('summary') or day['forecast']['text'], day['temperature']),
                             'issued_at': issued, 'valid_from': start,
                             'valid_until': start + timedelta(days=1),
+                            **_weather_extras(day),
                         })
                     except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
                         continue
@@ -175,14 +241,74 @@ async def get_daily_forecast(bot_data, now=None):
         return forecast if _current(forecast, now) else None
 
 
-def format_daily_forecast(forecast, compact=True):
+def _clock_label(value):
+    if value.hour == 0 and value.minute == 0:
+        return 'midnight'
+    if value.hour == 12 and value.minute == 0:
+        return '12 noon'
+    minutes = f':{value.minute:02d}' if value.minute else ''
+    return f'{value.hour % 12 or 12}{minutes} {"am" if value.hour < 12 else "pm"}'
+
+
+def _regional_conditions(regions):
+    groups = {}
+    for name in REGIONS:
+        if name in regions:
+            groups.setdefault(regions[name], []).append(name)
+    if len(groups) == 1 and len(regions) == len(REGIONS):
+        return f'{next(iter(groups))} across Singapore'
+    return '; '.join(f'{text} ({", ".join(names)})' for text, names in groups.items())
+
+
+def forecast_detail_lines(forecast, now=None, target_date=None, include_timeline=True):
+    """Render supplied windows, never inventing hourly chances or rain duration."""
+    now = _sg_time(now)
+    lines = []
+    if target_date is None:
+        start_limit, end_limit = forecast['valid_from'], forecast['valid_until']
+    else:
+        start_limit = datetime.combine(target_date, datetime.min.time(), tzinfo=SGT)
+        end_limit = start_limit + timedelta(days=1)
+    timeline = []
+    for period in forecast.get('periods', []):
+        start, end = max(period['start'], start_limit), min(period['end'], end_limit)
+        if end <= start or end <= now:
+            continue  # Noon updates omit elapsed morning windows.
+        start_label, end_label = _clock_label(start), _clock_label(end)
+        if target_date is None and start.date() != now.date():
+            start_label = f'{start:%d %b} {start_label}'
+        if target_date is None and end.date() != start.date():
+            end_label = f'{end:%d %b} {end_label}'
+        timeline.append(f'• {start_label}–{end_label}: {_regional_conditions(period["regions"])}')
+    if timeline and include_timeline:
+        lines.extend(['Approximate timing (SGT)', *timeline,
+                      'Showers may be brief or local within these windows.'])
+    elif include_timeline:
+        lines.append('Detailed time windows are not available for this outlook yet.')
+    extras = []
+    if 'wind' in forecast:
+        direction, low, high = forecast['wind']
+        extras.append(f'Wind: {direction} {low:g}–{high:g} km/h')
+    if 'humidity' in forecast:
+        low, high = forecast['humidity']
+        extras.append(f'Humidity: {low:g}–{high:g}%')
+    if extras:
+        lines.extend(['', *extras])
+    return lines
+
+
+def format_daily_forecast(forecast, compact=True, now=None, hourly=None):
     """A national outlook with explicit source and its true validity window."""
     start, end = forecast['valid_from'], forecast['valid_until']
     lines = [
         'Singapore daily outlook · NEA/MSS',
         f"{forecast['outlook']} · {forecast['low']:g}–{forecast['high']:g}°C",
-        f'Valid {start:%d %b %H:%M}–{end:%d %b %H:%M} SGT',
     ]
+    if not compact:
+        if hourly:
+            lines.extend(['', hourly])
+        lines.extend(['', *forecast_detail_lines(forecast, now, include_timeline=not hourly), ''])
+    lines.append(f'Valid {start:%d %b %H:%M}–{end:%d %b %H:%M} SGT')
     if not compact:
         lines.append(f"Issued {forecast['issued_at']:%d %b %H:%M} SGT · data.gov.sg")
     return '\n'.join(lines)
@@ -197,5 +323,12 @@ async def weather_command(update, context):
     if forecast is None:
         text = 'Daily outlook unavailable right now. Please try /weather again shortly.'
     else:
-        text = f'{format_daily_forecast(forecast, compact=False)}\nSource: {SOURCE_URL}'
+        from telegram_code.hourly_forecast import hourly_forecast_text
+        now = _sg_time()
+        try:
+            hourly = await hourly_forecast_text(context.application.bot_data, update.effective_chat.id, now.date(), now)
+        except Exception as exc:
+            _LOGGER.warning('Optional hourly forecast unavailable: %s', type(exc).__name__)
+            hourly = None
+        text = f'{format_daily_forecast(forecast, compact=False, now=now, hourly=hourly)}\nNEA source: {SOURCE_URL}'
     await message.reply_text(text, disable_web_page_preview=True)

@@ -146,6 +146,10 @@ class WeatherCommandTests(unittest.IsolatedAsyncioTestCase):
         # Intentionally no saved location, preferences, user/chat data or database.
         self.context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
         self.update = SimpleNamespace(effective_message=SimpleNamespace(reply_text=AsyncMock()))
+        self.update.effective_chat = SimpleNamespace(id=42)
+        hourly = patch('telegram_code.hourly_forecast.hourly_forecast_text', AsyncMock(return_value=None))
+        hourly.start()
+        self.addCleanup(hourly.stop)
 
     async def test_fresh_outlook_includes_source_and_true_window_without_preview(self):
         forecast = module.parse_daily_forecast(payload(), NOW)
