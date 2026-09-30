@@ -5,7 +5,7 @@ from telegram.ext import ConversationHandler
 
 def main_menu(chat_id=None):
     rows = [["My forecast", "Current radar"], ["Change location", "Alert settings"]]
-    rows += [["Add location", "Saved locations"], ["Remove location"]]
+    rows += [["Add location", "Saved locations"], ["Remove location", "Weather updates"]]
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
 
 

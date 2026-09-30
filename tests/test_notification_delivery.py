@@ -43,9 +43,6 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         clock = patch.object(delivery, 'sg_now', return_value=datetime(2026,9,28,12,0,30))
         clock.start()
         self.addCleanup(clock.stop)
-        weather = patch.object(delivery, 'get_daily_forecast', AsyncMock(return_value=None))
-        weather.start()
-        self.addCleanup(weather.stop)
         recovery = patch.object(delivery, 'recover_abandoned_notifications')
         recovery.start()
         self.addCleanup(recovery.stop)
@@ -182,15 +179,15 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(text.count('Rain cleared'), 6)
         self.assertLessEqual(len(text.encode('utf-16-le')) // 2, 4096)
 
-    async def test_outlook_only_on_first_notice_and_never_repeated_per_location(self):
+    async def test_rain_notices_no_longer_fetch_or_append_daily_outlooks(self):
         self.item['first_today'] = True
         second = self.second_item()
         later = dict(self.item, id=3, first_today=False)
-        with patch.object(delivery, 'get_daily_forecast', AsyncMock(return_value={'weather': 'fixture'})), patch.object(delivery, 'format_daily_forecast', return_value='Official outlook fixture'), patch.object(delivery, 'claim_notifications', side_effect=[[self.item, second], [later], None]), patch.object(delivery, 'finish_notification'):
+        with patch.object(daily_forecast, 'get_daily_forecast', AsyncMock()) as fetch, patch.object(delivery, 'claim_notifications', side_effect=[[self.item, second], [later], None]), patch.object(delivery, 'finish_notification'):
             await delivery.deliver_notifications(self.context)
+        fetch.assert_not_awaited()
         texts = [call.kwargs['text'] for call in self.context.bot.send_message.await_args_list]
-        self.assertEqual(texts[0].count('Official outlook fixture'), 1)
-        self.assertNotIn('Official outlook fixture', texts[1])
+        self.assertTrue(all('daily outlook' not in text for text in texts))
 
     async def test_daily_outlook_unavailable_does_not_block_rain_notice(self):
         self.item['first_today'] = True

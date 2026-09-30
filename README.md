@@ -139,6 +139,7 @@ In a private chat or group with the bot:
 - **My forecast**: request a forecast for your saved location.
 - **Current radar** or `/actual`: request the latest radar snapshot.
 - `/weather`: request the official Singapore daily outlook and temperature range.
+- **Weather updates** or `/weatheralerts`: turn all scheduled daily forecasts on or off.
 - **Change location**: update your saved location.
 - **Alert settings** or `/setmode`: choose automatic or manual updates.
 
@@ -183,22 +184,44 @@ See [feedback and private storage](docs/forecast-feedback.md) for details.
 
 ### Daily weather outlook
 
-The first automatic rain notice each Singapore calendar day includes the latest
-available **NEA/MSS Singapore-wide 24-hour outlook**, with its temperature range
-and exact validity window. Use `/weather` any time, including on dry days or in
-manual mode. No extra API key or environment setting is needed.
+Open **Weather updates** from `/menu`, or send `/weatheralerts`. A single
+**Daily weather updates: On/Off** switch controls all three bulletins:
 
-The source is the [official 24-hour weather forecast on data.gov.sg](https://data.gov.sg/datasets/d_ce2eb1e307bda31993c533285834ef2b/view),
-updated every six hours and additionally when needed. Its 24-hour window can
-cross midnight; it is a national outlook, separate from the bot's local
-five-minute rain prediction. Requests are shared across chats and cached for
-15 minutes. Failed requests back off for five minutes; expired or old-issued
-outlooks are omitted. Rain notices still send when this service is unavailable.
-If it was unavailable for the first notice, `/weather` can be used to try again.
+| Singapore time | Bulletin |
+| --- | --- |
+| 5 am | Today's weather |
+| 12 noon | Updated outlook for today |
+| 10 pm | Tomorrow's weather |
 
-Daily inclusion is checked against the durable notification history, so normal
-restarts do not repeat it. An uncertain delivery also counts as that day's first
-attempt to avoid repeating an outlook that may already have arrived.
+Updates are **off by default** and start at the next scheduled time after opting
+in. Each private chat or group has its own switch; only group admins can change
+the group's switch. These bulletins send on dry days too, without a saved
+location or a successful radar/model run. **Alert settings** still controls
+local rain alerts separately. Daily outlooks are no longer appended to rain alerts.
+Use `/weather` any time for an on-demand outlook, even with scheduled updates off.
+No extra API key or environment setting is needed.
+
+Morning and noon use the [official NEA/MSS 24-hour forecast](https://data.gov.sg/datasets/d_ce2eb1e307bda31993c533285834ef2b/view).
+The night bulletin selects tomorrow's exact date from the
+[official four-day outlook](https://data.gov.sg/datasets/d_f131f6e343bf8168e4057a04c4326a0a/view).
+Before a suitable morning issue is available, the bot can use the prior day's
+four-day issue for today's date. Bulletins show the temperature range, issue time
+and actual validity window; these national forecasts are separate from local
+five-minute rain predictions. A noon bulletin is sent even if NEA's outlook has
+not changed since morning.
+
+The scheduler checks every minute using Singapore time regardless of the host's
+timezone. Forecast requests are shared across subscribers and retried after five
+minutes if unavailable. Following a brief restart, a missed bulletin can send up
+to 30 minutes after its scheduled time; older bulletins are skipped. If no valid
+source becomes available within that window, the bulletin is skipped. `/weather`
+remains available to try again.
+
+Preferences and per-slot delivery records are created automatically in
+`data/weather_schedule.sqlite3`, covered by the existing Docker data mount and
+Git ignore rules. Keep this file across restarts to preserve opt-ins and avoid
+duplicate bulletins. A send with an uncertain result is not retried, since it may
+already have arrived. Telegram rate limits are retried within the delivery window.
 
 ## Telegram cute mode
 

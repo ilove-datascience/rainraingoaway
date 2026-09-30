@@ -8,7 +8,6 @@ from telegram_code.database import _get_db_connection
 from telegram_code.forecast_policy import sg_now
 from telegram_code.rain_state import ENDED, OBSERVED, CANCELLED, ENDING
 from telegram_code.notification_text import compose_notice
-from telegram_code.daily_forecast import get_daily_forecast, format_daily_forecast
 from telegram_code.feedback_context import notification_feedback, with_feedback_prompt
 
 
@@ -155,9 +154,6 @@ async def _deliver_notifications(context, reply_markup=None):
             print(f'Notification {key} receipt retry failed: {type(exc).__name__}')
     await asyncio.to_thread(recover_abandoned_notifications, sg_now(), tuple(receipts))
     for _ in range(100):
-        # Cached across chats. Fetch before claiming so an HTTP delay cannot age a
-        # claim, and recheck validity if a large recipient list takes a long time.
-        outlook = await get_daily_forecast(context.application.bot_data)
         # Release between recipients so a mode/location change can take effect promptly.
         async with settings_lock(context):
             state_lock = context.application.bot_data.setdefault('rain_state_lock', asyncio.Lock())
@@ -170,8 +166,7 @@ async def _deliver_notifications(context, reply_markup=None):
             item = items[0]
             now = sg_now()
             markup = reply_markup(item['userid']) if callable(reply_markup) else reply_markup
-            daily = format_daily_forecast(outlook) if outlook and item.get('first_today') else None
-            message = compose_notice(items, outlook=daily)
+            message = compose_notice(items)
             try:
                 feedback = await notification_feedback(item['userid'], items)
             except Exception as exc:

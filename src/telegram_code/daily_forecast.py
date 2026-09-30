@@ -12,6 +12,7 @@ import requests
 
 
 FORECAST_URL = 'https://api-open.data.gov.sg/v2/real-time/api/twenty-four-hr-forecast'
+OUTLOOK_URL = 'https://api-open.data.gov.sg/v2/real-time/api/four-day-outlook'
 SOURCE_URL = 'https://data.gov.sg/datasets/d_ce2eb1e307bda31993c533285834ef2b/view'
 SGT = timezone(timedelta(hours=8))
 CACHE_TTL = timedelta(minutes=15)
@@ -41,7 +42,22 @@ def _current(forecast, now):
                 and timedelta(0) <= now - forecast['issued_at'] <= MAX_ISSUE_AGE)
 
 
-def parse_daily_forecast(payload, now=None):
+def _weather_values(text, temperature):
+    if not isinstance(text, str):
+        raise ValueError('Invalid forecast text')
+    text = ' '.join(text.split())
+    if not text or len(text) > 180:
+        raise ValueError('Invalid forecast text length')
+    low, high = temperature['low'], temperature['high']
+    if any(isinstance(value, bool) or not isinstance(value, (int, float))
+           or not math.isfinite(value) for value in (low, high)):
+        raise ValueError('Invalid temperature')
+    if temperature.get('unit') != 'Degrees Celsius' or not -20 <= low <= high <= 60:
+        raise ValueError('Invalid temperature range or unit')
+    return {'outlook': text, 'low': low, 'high': high}
+
+
+def parse_daily_forecast(payload, now=None, *, scheduled=False):
     """Return the newest valid outlook, or None for missing/stale/invalid data."""
     now = _sg_time(now)
     try:
@@ -56,34 +72,74 @@ def parse_daily_forecast(payload, now=None):
     for record in records:
         try:
             general = record['general']
-            outlook = general['forecast']['text']
-            if not isinstance(outlook, str):
-                continue
-            outlook = ' '.join(outlook.split())
-            # Unexpected long content is omitted, never silently truncated.
-            if not outlook or len(outlook) > 180:
-                continue
-            temperature = general['temperature']
-            low, high = temperature['low'], temperature['high']
-            if any(isinstance(value, bool) or not isinstance(value, (int, float))
-                   or not math.isfinite(value) for value in (low, high)):
-                continue
-            if temperature.get('unit') != 'Degrees Celsius' or not -20 <= low <= high <= 60:
-                continue
             forecast = {
-                'outlook': outlook,
-                'low': low,
-                'high': high,
+                **_weather_values(general['forecast']['text'], general['temperature']),
                 'issued_at': _api_time(record['timestamp']),
                 'valid_from': _api_time(general['validPeriod']['start']),
                 'valid_until': _api_time(general['validPeriod']['end']),
             }
             duration = forecast['valid_until'] - forecast['valid_from']
-            if timedelta(0) < duration <= timedelta(hours=24) and _current(forecast, now):
+            current = _current(forecast, now)
+            if scheduled:
+                # At 05:00 a new outlook can begin at 06:00. Conversely, last
+                # night's outlook ending at 06:00 is not a forecast for today.
+                current = (timedelta(0) <= now - forecast['issued_at'] <= MAX_ISSUE_AGE
+                           and forecast['valid_from'] <= now + timedelta(hours=2)
+                           and forecast['valid_until'] >= now + timedelta(hours=6))
+            if timedelta(0) < duration <= timedelta(hours=24) and current:
                 forecasts.append(forecast)
         except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
             continue
     return max(forecasts, key=lambda row: row['issued_at'], default=None)
+
+
+def parse_dated_outlook(payload, target_date, now=None):
+    """Select an exact calendar day from NEA's four-day outlook."""
+    now = _sg_time(now)
+    forecasts = []
+    try:
+        if payload.get('code') != 0 or not isinstance(payload['data']['records'], list):
+            return None
+        for record in payload['data']['records']:
+            try:
+                issued = _api_time(record['timestamp'])
+                if not timedelta(0) <= now - issued <= timedelta(hours=36):
+                    continue
+                for day in record['forecasts']:
+                    try:
+                        start = _api_time(day['timestamp'])
+                        if start.date() != target_date or start.hour or start.minute or start.second:
+                            continue
+                        forecasts.append({
+                            **_weather_values(day['forecast'].get('summary') or day['forecast']['text'], day['temperature']),
+                            'issued_at': issued, 'valid_from': start,
+                            'valid_until': start + timedelta(days=1),
+                        })
+                    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+                        continue
+            except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+                continue
+    except (KeyError, TypeError, AttributeError):
+        return None
+    return max(forecasts, key=lambda row: row['issued_at'], default=None)
+
+
+def fetch_scheduled_forecast(slot, now):
+    """Fetch a national forecast covering today, or tomorrow for the night slot."""
+    now = _sg_time(now)
+    target = now.date() + timedelta(days=slot == 'night')
+    if slot != 'night':
+        with requests.get(FORECAST_URL, timeout=(3, 5)) as response:
+            response.raise_for_status()
+            forecast = parse_daily_forecast(response.json(), now, scheduled=True)
+        if forecast:
+            return forecast
+    # Before the morning update, yesterday's four-day issue includes today.
+    # This avoids labelling a nearly expired overnight outlook as today's weather.
+    params = {'date': (now.date() - timedelta(days=1)).isoformat()} if slot != 'night' else {}
+    with requests.get(OUTLOOK_URL, params=params, timeout=(3, 5)) as response:
+        response.raise_for_status()
+        return parse_dated_outlook(response.json(), target, now)
 
 
 def fetch_daily_forecast(now=None):
