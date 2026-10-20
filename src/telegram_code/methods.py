@@ -623,17 +623,23 @@ async def handle_actual(
         await update.message.reply_text("No radar images available yet.", reply_markup=ReplyKeyboardRemove())
         return
 
-    location = await asyncio.to_thread(get_location, update.effective_chat.id)
+    rows = await asyncio.to_thread(list_locations, update.effective_chat.id)
+    if len(rows) > 6:
+        await update.message.reply_text('This chat has more than 6 locations. Use /removelocation to reduce it to 6 before requesting a map.', reply_markup=ReplyKeyboardRemove())
+        return
     try:
-        plot_buffer, caption = await asyncio.to_thread(build_radar_snapshot_plot, latest_png, location)
+        if rows:
+            plot_buffer, caption = await asyncio.to_thread(build_group_actual, rows, latest_png)
+        else:
+            plot_buffer, caption = await asyncio.to_thread(build_radar_snapshot_plot, latest_png, None)
     except (OSError, ValueError) as exc:
         print(f"Actual radar unavailable: {exc}")
         await update.message.reply_text(
             "ACTUAL RADAR UNAVAILABLE\n\nThe latest radar image could not be decoded. Please try again shortly.",
             reply_markup=ReplyKeyboardRemove())
         return
-    markup = await radar_feedback(update.effective_chat.id, location_row(location), latest_png)
     try:
+        markup = await radar_feedback(update.effective_chat.id, rows, latest_png)
         await reply_weather_photo(update, plot_buffer, caption, markup)
     finally:
         plot_buffer.close()

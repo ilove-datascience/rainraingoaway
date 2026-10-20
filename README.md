@@ -161,7 +161,9 @@ back. Automatic alerts do not open the menu. The equivalent commands also work:
 - **My forecast**: show one map with colour-coded markers and a location legend below the map for all saved locations and a short rain-status line for each.
 
 The initial location is **Main**. **Change location** updates Main; **Current radar**
-shows its marker. Main stays saved and can be changed rather than removed.
+or `/actual` shows all this chat's saved points on one colour-coded map, with a
+location legend, radar status and feedback buttons for each point. Main stays
+saved and can be changed rather than removed.
 Each private chat or group can save up to **6 locations, including Main**. Remove an extra location before adding a seventh. Names must be unique within a group (up to 80 characters). Automatic alerts include
 location names and track rain independently at each location; **Alert settings**
 applies to the whole group. Private chats use the same location controls and combined maps. Personal locations remain separate from group locations.

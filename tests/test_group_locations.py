@@ -97,6 +97,95 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         await env['handle_msg'](self.update, self.context, None, '.')
         combined.assert_awaited_once_with(self.update, self.context, None, '.', None)
 
+    async def test_actual_radar_shows_every_saved_point_and_keeps_feedback_chat_scoped(self):
+        from telegram_code.feedback_context import reply_weather_photo
+        all_rows = self.rows + [
+            dict(location_id=i, label=f'Point {i}', latitude=1.3, longitude=103.8)
+            for i in range(8, 12)]
+        for chat_id in (42, -1001):
+            for rows in (all_rows[:1], all_rows):
+                with self.subTest(chat_id=chat_id, points=len(rows)):
+                    self.update.effective_chat.id = chat_id
+                    self.update.effective_user = SimpleNamespace(id=999)
+                    self.update.message.reply_photo.reset_mock()
+                    image, path = BytesIO(b'radar'), Path('202610201200.png')
+                    caption = 'Actual radar\n' + '\n'.join(row['label'] for row in rows)
+                    locations = Mock(return_value=rows)
+                    combined = Mock(return_value=(image, caption))
+                    overview = Mock()
+                    feedback = AsyncMock(return_value='location-feedback-buttons')
+                    env = functions('src/telegram_code/methods.py', dict(
+                        asyncio=asyncio, Update=object, ContextTypes=SimpleNamespace(DEFAULT_TYPE=object),
+                        ReplyKeyboardRemove=lambda: 'removed', list_locations=locations,
+                        get_latest_radar_png=lambda folder: path, build_group_actual=combined,
+                        build_radar_snapshot_plot=overview, radar_feedback=feedback,
+                        reply_weather_photo=reply_weather_photo), {'handle_actual'})
+                    await env['handle_actual'](self.update, self.context, '.')
+                    locations.assert_called_once_with(chat_id)
+                    combined.assert_called_once_with(rows, path)
+                    feedback.assert_awaited_once_with(chat_id, rows, path)
+                    overview.assert_not_called()
+                    sent = self.update.message.reply_photo.await_args.kwargs
+                    self.assertEqual(sent['reply_markup'], 'location-feedback-buttons')
+                    for row in rows:
+                        self.assertIn(row['label'], sent['caption'])
+                    self.assertNotIn('Forecast delayed', sent['caption'])
+                    self.assertTrue(image.closed)
+
+    async def test_actual_radar_without_saved_points_keeps_national_overview(self):
+        from telegram_code.feedback_context import reply_weather_photo
+        image, path = BytesIO(b'radar'), Path('202610201200.png')
+        overview = Mock(return_value=(image, 'Actual radar'))
+        feedback = AsyncMock(return_value=None)
+        env = functions('src/telegram_code/methods.py', dict(
+            asyncio=asyncio, Update=object, ContextTypes=SimpleNamespace(DEFAULT_TYPE=object),
+            ReplyKeyboardRemove=lambda: 'removed', list_locations=lambda chat: [],
+            get_latest_radar_png=lambda folder: path, build_radar_snapshot_plot=overview,
+            radar_feedback=feedback, reply_weather_photo=reply_weather_photo), {'handle_actual'})
+        await env['handle_actual'](self.update, self.context, '.')
+        overview.assert_called_once_with(path, None)
+        feedback.assert_awaited_once_with(-1001, [], path)
+        self.assertTrue(image.closed)
+
+    async def test_current_radar_button_uses_actual_radar_handler(self):
+        self.update.message.text = 'Current radar'
+        handler = AsyncMock()
+        env = functions('src/telegram_code/methods.py', dict(handle_actual=handler), {'handle_msg'})
+        await env['handle_msg'](self.update, self.context, None, '.')
+        handler.assert_awaited_once_with(self.update, self.context, '.')
+
+    async def test_actual_radar_decode_error_sends_no_photo_or_feedback(self):
+        feedback = AsyncMock()
+        env = functions('src/telegram_code/methods.py', dict(
+            asyncio=asyncio, Update=object, ContextTypes=SimpleNamespace(DEFAULT_TYPE=object),
+            ReplyKeyboardRemove=lambda: 'removed', list_locations=lambda chat: self.rows,
+            get_latest_radar_png=lambda folder: Path('202610201200.png'),
+            build_group_actual=Mock(side_effect=ValueError('invalid PNG')),
+            radar_feedback=feedback), {'handle_actual'})
+        await env['handle_actual'](self.update, self.context, '.')
+        self.update.message.reply_photo.assert_not_awaited()
+        feedback.assert_not_awaited()
+        self.assertIn('ACTUAL RADAR UNAVAILABLE', self.update.message.reply_text.await_args.args[0])
+
+    def test_actual_map_marks_and_describes_all_six_points(self):
+        rows = self.rows + [dict(location_id=i, label=f'Point {i}', latitude=1.3, longitude=103.8)
+                            for i in range(8, 12)]
+        render = Mock(return_value=BytesIO(b'map'))
+        env = functions('src/telegram_code/methods.py', dict(
+            in_coverage=lambda *a: True,
+            local_rain=Mock(side_effect=[(.1 if i % 2 else 0, (i, i), 250) for i in range(6)]),
+            render_heatmap=render, source_category=lambda value: 'Light'), {'build_group_map'})
+        image, caption = env['build_group_map'](rows, 'grid', datetime(2026, 10, 20, 12), actual=True)
+        try:
+            markers = render.call_args.kwargs['marker']
+            self.assertEqual([marker[0] for marker in markers], [row['label'] for row in rows])
+            self.assertEqual(len({marker[1] for marker in markers}), 6)
+            for index, row in enumerate(rows):
+                status = 'Rain detected' if index % 2 else 'No rain detected'
+                self.assertIn(f"{row['label']}: {status}", caption)
+        finally:
+            image.close()
+
     async def test_group_sends_one_image_and_closes_it(self):
         from telegram_code.feedback_context import reply_weather_photo
         image = BytesIO(b'group-map')

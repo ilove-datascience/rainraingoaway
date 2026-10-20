@@ -71,9 +71,12 @@ class ForecastFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.radar_feedback.assert_not_awaited()
 
     async def test_current_radar_feedback_matches_saved_main(self):
+        rows = [{'latitude': 1.3, 'longitude': 103.8, 'label': 'Main', 'location_id': 0}]
+        self.env['list_locations'] = Mock(return_value=rows)
         self.update.message.text = 'Current radar'
         await self.env['handle_msg'](self.update, self.context, None, '.')
-        self.radar_feedback.assert_awaited_once_with(1, [{'latitude': 1.3, 'longitude': 103.8, 'label': 'Main'}], Path('202609111050.png'))
+        self.radar_feedback.assert_awaited_once_with(1, rows, Path('202609111050.png'))
+        self.env['build_group_actual'].assert_called_once_with(rows, Path('202609111050.png'))
         self.forecast_feedback.assert_not_awaited()
 
     async def test_group_forecast_feedback_covers_exact_rendered_rows(self):
