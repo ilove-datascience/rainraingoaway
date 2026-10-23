@@ -9,6 +9,7 @@ import numpy as np
 from telegram import ReplyKeyboardRemove
 from telegram_code.feedback import FEEDBACK_PROMPT, prepare_feedback
 from telegram_code.local_rain import in_coverage, local_rain
+from telegram_code.notification_text import notice_display_index
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ async def notification_feedback(chat_id, items):
             payload = json.loads(item.get('message') or '')
             if isinstance(payload, dict) and payload.get('rain_alert') == 1 and payload.get('feedback'):
                 snapshots.append(_dated(payload['feedback']))
-                snapshots[-1]['display_index'] = index
+                snapshots[-1]['display_index'] = notice_display_index(item, index)
         except (ValueError, KeyError, TypeError):
             continue  # Legacy notices keep working without guessing a location.
     return await prepare_feedback(chat_id, snapshots) if snapshots else None

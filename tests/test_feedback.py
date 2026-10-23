@@ -45,7 +45,7 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
         return SimpleNamespace(callback_query=query, effective_chat=chat, effective_user=user)
 
     async def vote(self, markup, wet=False, **kwargs):
-        button = markup.inline_keyboard[int(wet)][0]
+        button = markup.inline_keyboard[0][int(wet)]
         update = self.update(button.callback_data, **kwargs)
         await feedback.handle_feedback(update, None)
         self.assertFalse(update.callback_query.answer.await_args.kwargs['show_alert'])
@@ -54,10 +54,11 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_frozen_snapshot_and_small_opaque_callbacks(self):
         markup = await self.buttons()
         for row in markup.inline_keyboard:
-            self.assertEqual(len(row), 1)
-            self.assertLessEqual(len(row[0].callback_data.encode()), 64)
-            self.assertNotIn('103.8', row[0].callback_data)
-            self.assertIn('Radar 12:00', row[0].text)
+            self.assertEqual(len(row), 2)
+            for button in row:
+                self.assertLessEqual(len(button.callback_data.encode()), 64)
+                self.assertNotIn('103.8', button.callback_data)
+                self.assertIn('1. 12:00', button.text)
         saved = self.rows('feedback_snapshots')[0]
         self.assertEqual((saved['latitude'], saved['longitude'], saved['radius_m']), (1.31, 103.8, 250))
         self.assertEqual(saved['settings_version'], 4)
@@ -89,7 +90,7 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_forecast_opens_at_target_and_closes_after_thirty_minutes(self):
         target = self.now + timedelta(minutes=5)
         markup = await self.buttons(kind='forecast', target_at=target, forecast_value=.2)
-        self.assertIn('Forecast 12:05', markup.inline_keyboard[0][0].text)
+        self.assertIn('1. 12:05', markup.inline_keyboard[0][0].text)
         self.assertIn('Please report then', await self.vote(markup))
         self.assertFalse(self.rows('feedback_reports'))
         self.now = target
@@ -163,13 +164,13 @@ class FeedbackTests(unittest.IsolatedAsyncioTestCase):
         update.callback_query.answer.assert_awaited_once_with('Saved: Main — not raining. Thanks!', show_alert=False)
         self.assertEqual(len(self.rows('feedback_reports')), 1)
 
-    async def test_numbered_full_width_buttons_disambiguate_similar_long_labels(self):
+    async def test_numbered_button_pairs_disambiguate_similar_long_labels(self):
         snapshots = [dict(self.facts, label='Very long matching prefix home', display_index=2),
                      dict(self.facts, label='Very long matching prefix work', display_index=3)]
         markup = await feedback.prepare_feedback(-1001, snapshots)
-        self.assertTrue(markup.inline_keyboard[0][0].text.startswith('2. Radar'))
-        self.assertTrue(markup.inline_keyboard[2][0].text.startswith('3. Radar'))
-        self.assertEqual(await self.vote(SimpleNamespace(inline_keyboard=markup.inline_keyboard[2:])),
+        self.assertTrue(markup.inline_keyboard[0][0].text.startswith('2. 12:00'))
+        self.assertTrue(markup.inline_keyboard[1][0].text.startswith('3. 12:00'))
+        self.assertEqual(await self.vote(SimpleNamespace(inline_keyboard=markup.inline_keyboard[1:])),
                          'Saved: Very long matching prefix work — not raining. Thanks!')
         report = self.rows('feedback_reports')[0]
         saved = next(row for row in self.rows('feedback_snapshots') if row['token'] == report['token'])

@@ -131,6 +131,18 @@ class FeedbackContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row['latitude'] for row in snapshots], [1.3, 1.35])
         self.assertEqual([row['radius_m'] for row in snapshots], [250, 250])
 
+    async def test_partial_notification_keeps_its_number_on_all_locations_map(self):
+        from telegram_code.notification_text import compose_notice
+        office = dict(self.row, label='Office', location_id=7)
+        frozen = context.snapshot(office, 'radar', self.observed, self.observed,
+                                  radar_value=.3, radius_m=250)
+        item = dict(message=encode_alert('Office', OBSERVED, 'Light',
+                    photo_locations=[[0, 3], [5, 1], [7, 3]], feedback=frozen),
+                    reason=OBSERVED, location_id=7, observed_at=self.observed)
+        await context.notification_feedback(-1001, [item])
+        self.assertEqual(self.prepare.await_args.args[1][0]['display_index'], 3)
+        self.assertIn('3. Office: Light rain detected.', compose_notice([item]))
+
     async def test_stale_radar_cannot_create_buttons_or_write_store(self):
         stale = context._grid_snapshots([self.row], 'radar', self.observed, self.observed, radar=self.radar)
         now = (self.observed + timedelta(minutes=30)).replace(tzinfo=feedback.SGT).astimezone(timezone.utc)

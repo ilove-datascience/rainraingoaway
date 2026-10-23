@@ -18,37 +18,37 @@ class NoticeFormatTests(unittest.TestCase):
 
     def test_single_location_detected_has_one_source_and_no_forecast(self):
         text = compose_notice([self.event(intensity='Light')])
-        self.assertEqual(text, 'Rain update\n\n• Main: Light rain detected.\n\n'
+        self.assertEqual(text, 'Rain update\n\n1. Main: Light rain detected.\n\n'
                          'Radar: 28 Sep, 14:00 SGT\n'
                          'Intensity is relative to the radar colour scale.')
         self.assertNotIn('Forecast:', text)
 
     def test_two_locations_share_header_and_radar_timestamp(self):
         text = compose_notice([self.event('Home'), self.event('Office', ENDED)])
-        self.assertIn('• Home: Rain detected.', text)
-        self.assertIn('• Office: Rain cleared (radar dry for 15 minutes).', text)
+        self.assertIn('1. Home: Rain detected.', text)
+        self.assertIn('2. Office: Rain cleared (radar dry for 15 minutes).', text)
         self.assertEqual(text.count('Rain update'), 1)
         self.assertEqual(text.count('Radar:'), 1)
 
     def test_forecast_is_explicit_for_expected_rain_only(self):
         text = compose_notice([self.event('Home', START, 'Moderate'),
                                self.event('Office', OBSERVED)])
-        self.assertIn('• Home: Moderate rain expected.', text)
-        self.assertIn('• Office: Rain detected.', text)
+        self.assertIn('1. Home: Moderate rain expected.', text)
+        self.assertIn('2. Office: Rain detected.', text)
         self.assertIn('Forecast: 28 Sep, 14:05 SGT', text)
         self.assertNotIn('Forecast:', compose_notice([self.event(reason=ENDING)]))
 
     def test_mixed_radar_times_stay_attached_to_locations(self):
         text = compose_notice([self.event('Home'), self.event('Office', ENDED, minute=5)])
-        self.assertIn('• Home: Rain detected.\n  Radar: 28 Sep, 14:00 SGT', text)
-        self.assertIn('• Office: Rain cleared (radar dry for 15 minutes).\n'
+        self.assertIn('1. Home: Rain detected.\n  Radar: 28 Sep, 14:00 SGT', text)
+        self.assertIn('2. Office: Rain cleared (radar dry for 15 minutes).\n'
                       '  Radar: 28 Sep, 14:05 SGT', text)
 
     def test_mixed_forecast_times_stay_attached_to_locations(self):
         text = compose_notice([self.event('Home', START), self.event('Office', START, minute=5)])
-        self.assertIn('• Home: Rain expected.\n  Radar: 28 Sep, 14:00 SGT'
+        self.assertIn('1. Home: Rain expected.\n  Radar: 28 Sep, 14:00 SGT'
                       ' · Forecast: 28 Sep, 14:05 SGT', text)
-        self.assertIn('• Office: Rain expected.\n  Radar: 28 Sep, 14:05 SGT'
+        self.assertIn('2. Office: Rain expected.\n  Radar: 28 Sep, 14:05 SGT'
                       ' · Forecast: 28 Sep, 14:10 SGT', text)
 
     def test_cancellation_describes_expired_forecast_without_claiming_it_rained(self):
@@ -62,12 +62,12 @@ class NoticeFormatTests(unittest.TestCase):
         item['message'] = ('kaixin\nRAIN EXPECTED | FORECAST\n\n'
                            'Expected intensity: Heavy (radar scale)\n'
                            'Forecast for: 28 Sep, 14:05 SGT')
-        self.assertIn('• kaixin: Heavy rain expected.', compose_notice([item]))
+        self.assertIn('1. kaixin: Heavy rain expected.', compose_notice([item]))
 
     def test_legacy_caption_without_location_does_not_use_title_as_label(self):
         item = self.event()
         item['message'] = 'RAIN DETECTED | ACTUAL RADAR\n\nObserved intensity: Light (radar scale)'
-        self.assertIn('• Saved location: Light rain detected.', compose_notice([item]))
+        self.assertIn('1. Saved location: Light rain detected.', compose_notice([item]))
 
     def test_label_is_normalized_and_bounded_without_clipping_the_notice(self):
         value = json.loads(encode_alert('  Home\n  upstairs\t balcony  ', OBSERVED))
@@ -79,7 +79,7 @@ class NoticeFormatTests(unittest.TestCase):
         text = compose_notice(items)
         self.assertGreater(len(text.encode('utf-16-le')) // 2, 1024)
         for i in range(6):
-            self.assertIn('• ' + json.loads(items[i]['message'])['label'] + ':', text)
+            self.assertIn(f'{i + 1}. ' + json.loads(items[i]['message'])['label'] + ':', text)
         self.assertEqual(text.count('radar dry for 15 minutes'), 6)
 
     def test_unknown_category_is_rejected(self):
@@ -89,7 +89,7 @@ class NoticeFormatTests(unittest.TestCase):
     def test_observed_rain_keeps_every_source_radar_category(self):
         for category in set(SOURCE_CATEGORIES):
             with self.subTest(category=category):
-                self.assertIn(f'• Main: {category} rain detected.',
+                self.assertIn(f'1. Main: {category} rain detected.',
                               compose_notice([self.event(intensity=category)]))
         with self.assertRaises(ValueError):
             encode_alert('Home', START, 'Light to Moderate')
@@ -99,7 +99,7 @@ class NoticeFormatTests(unittest.TestCase):
         item['label'] = 'Office'
         item['message'] = ('RAIN DETECTED | ACTUAL RADAR\n\n'
                            'Observed intensity: Moderate to Heavy (source radar scale)')
-        self.assertIn('• Office: Moderate to Heavy rain detected.', compose_notice([item]))
+        self.assertIn('1. Office: Moderate to Heavy rain detected.', compose_notice([item]))
 
     def test_photo_scope_is_preserved_as_metadata_only(self):
         item = self.event()

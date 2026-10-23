@@ -17,8 +17,8 @@ DB_PATH = Path(__file__).resolve().parents[2] / 'data' / 'forecast_feedback.sqli
 SGT = timezone(timedelta(hours=8))
 UTC = timezone.utc
 REPORT_WINDOW = timedelta(minutes=30)
-FEEDBACK_PROMPT = ('Feedback numbers follow location order above. Report at the button’s SGT time '
-                   'only if you were there; closes after 30 min.')
+FEEDBACK_PROMPT = ('Were you there? Choose a location number and report rain at the shown SGT time.\n'
+                   'Reports close 30 minutes after that time.')
 CALLBACK_PATTERN = r'^rainfb:[A-Za-z0-9_-]{16}:(?:dry|wet)$'
 
 
@@ -156,13 +156,13 @@ async def prepare_feedback(chat_id, snapshots):
         rows = []
         for index, (token, snapshot) in enumerate(prepared, 1):
             target = datetime.fromisoformat(snapshot['target_at']).astimezone(SGT)
-            label = snapshot['label']
-            short = label if len(label) <= 18 else label[:17] + '…'
             number = snapshot.get('display_index') or index
-            place_time = f'{number}. {snapshot["kind"].title()} {target:%H:%M} · {short}'
-            # Full-width buttons keep the location/time readable on phones.
-            rows.append([InlineKeyboardButton(f'{place_time}: Not raining', callback_data=f'rainfb:{token}:dry')])
-            rows.append([InlineKeyboardButton(f'{place_time}: Raining', callback_data=f'rainfb:{token}:wet')])
+            # Numbers match the full location labels; each button keeps its target time.
+            place_time = f'{number}. {target:%H:%M}'
+            rows.append([
+                InlineKeyboardButton(f'{place_time} · No rain', callback_data=f'rainfb:{token}:dry'),
+                InlineKeyboardButton(f'{place_time} · Raining', callback_data=f'rainfb:{token}:wet'),
+            ])
         return InlineKeyboardMarkup(rows)
     except Exception as exc:
         # Avoid logging tokens, coordinates, labels or reporter identities.

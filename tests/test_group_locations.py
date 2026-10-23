@@ -42,7 +42,7 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
             ConversationHandler=SimpleNamespace(END=-1)))
         self.assertEqual(await env['show_menu'](self.update, self.context), -1)
         self.assertNotIn('new_location_label', self.context.chat_data)
-        self.assertIn(['Add location', 'Saved locations'], self.update.message.reply_text.await_args.kwargs['reply_markup'])
+        self.assertIn(['Saved locations', 'Add location'], self.update.message.reply_text.await_args.kwargs['reply_markup'])
 
     async def test_completion_and_cancel_remove_keyboard(self):
         await self.env['add_location_command'](self.update, self.context)
@@ -218,7 +218,9 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         _, caption = env['build_group_map'](self.rows, 'grid', datetime(2026,9,17,12))
         self.assertEqual(render.call_args.kwargs['marker'], [('Main', '#e83288', (1,2)), ('Office', '#0072b2', (3,4))])
         self.assertIn('Main: No rain expected', caption)
-        self.assertNotIn('1.', caption)
+        self.assertIn('1. Main:', caption)
+        self.assertIn('2. Office:', caption)
+        self.assertEqual(render.call_args.kwargs['marker_numbers'], [1, 2])
         self.assertIn('Office: Rain expected — moderate (radar scale)', caption)
         self.assertIn('Main: No rain expected\n', caption)
         self.assertNotIn('Main: No rain expected —', caption)

@@ -482,27 +482,41 @@ def get_latest_radar_png(folder_path) -> Path | None:
 _plot_lock = threading.Lock()
 
 
-def render_heatmap(grid, title, colorbar_label, marker=None):
+def render_heatmap(grid, title, colorbar_label, marker=None, marker_numbers=None):
     # Matplotlib's pyplot state is shared by manual requests and queued alerts.
     with _plot_lock:
-        return _render_heatmap(grid, title, colorbar_label, marker)
+        return _render_heatmap(grid, title, colorbar_label, marker, marker_numbers)
 
 
-def _render_heatmap(grid, title, colorbar_label, marker=None):
+def _render_heatmap(grid, title, colorbar_label, marker=None, marker_numbers=None):
     """Render a phone-friendly weather card with unchanged radar coordinates."""
     sg_base_img = np.flipud(plt.imread(
         str(Path(__file__).resolve().parents[2] / "sgbaseimg_70km.png")))
-    background, ink, muted = "#f3f6fa", "#172b46", "#61738b"
-    fig = plt.figure(figsize=(8, 8) if isinstance(marker, list) else (8, 7), dpi=160, facecolor=background)
+    from matplotlib.patches import FancyBboxPatch, PathPatch
+    from matplotlib.path import Path as MarkerPath
+    from matplotlib.offsetbox import AnnotationBbox, DrawingArea
+    from matplotlib.text import Text
+    background, ink, muted = "#f4f7fb", "#17304c", "#60748b"
+    multiple = isinstance(marker, list)
+    # Render the text and marker edges at double density for high-DPI phones.
+    # Radar cells retain their original values and nearest-neighbour display.
+    fig = plt.figure(figsize=(8, 9) if multiple else (8, 7), dpi=320, facecolor=background)
     try:
         heading, separator, timestamp = title.partition(" | ")
-        fig.text(0.07, 0.95, "RAINRAINGOAWAY  /  SINGAPORE", fontsize=10,
+        fig.text(0.06, 0.96, "RAINRAINGOAWAY", fontsize=10,
                  weight="bold", color=muted)
-        fig.text(0.07, 0.905, heading, fontsize=21, weight="bold", color=ink)
+        forecast = 'forecast' in heading.lower() or 'prediction' in heading.lower()
+        badge = 'FORECAST' if forecast else 'RADAR OBSERVATION'
+        badge_colour = '#5640a0' if forecast else '#11675e'
+        fig.text(0.94, 0.96, badge, ha='right', fontsize=8, weight='bold',
+                 color=badge_colour,
+                 bbox=dict(boxstyle='round,pad=0.55', facecolor='#eee9fa' if forecast else '#dff2ed',
+                           edgecolor='none'))
+        fig.text(0.06, 0.905, heading, fontsize=24, weight="bold", color=ink)
         if separator:
-            fig.text(0.07, 0.872, timestamp, fontsize=11, color=muted)
-        ax = fig.add_axes([0.055, 0.34 if isinstance(marker, list) else 0.19, 0.89,
-                           0.49 if isinstance(marker, list) else 0.64])
+            fig.text(0.06, 0.873, timestamp, fontsize=12, color=muted)
+        ax = fig.add_axes([0.045, 0.40 if multiple else 0.20, 0.91,
+                           0.45 if multiple else 0.64])
         ax.set_facecolor("white")
         ax.imshow(sg_base_img, origin="lower",
                   extent=[0, grid.shape[1] - 1, 0, grid.shape[0] - 1], zorder=0)
@@ -513,20 +527,49 @@ def _render_heatmap(grid, title, colorbar_label, marker=None):
         # Preserve the source map proportions even if the model grid is resized.
         ax.set_aspect((sg_base_img.shape[0] / sg_base_img.shape[1]) *
                       ((grid.shape[1] - 1) / (grid.shape[0] - 1)))
-        if isinstance(marker, list):
-            fig.text(0.07, 0.29, 'SAVED LOCATIONS', fontsize=10, weight='bold', color=ink)
-            fig.text(0.07, 0.265, 'Coloured dots identify places only.', fontsize=10, color=muted)
-            from matplotlib.lines import Line2D
-            fig.add_artist(Line2D([0.07, 0.93], [0.16, 0.16], transform=fig.transFigure,
-                                  color='#cbd5e1', linewidth=1))
+        if multiple:
+            fig.text(0.06, 0.365, 'YOUR SAVED PLACES', fontsize=11, weight='bold', color=ink)
+            fig.text(0.94, 0.365, f'{len(marker)} on map', fontsize=10, color=muted, ha='right')
+            numbers = marker_numbers if marker_numbers is not None else range(1, len(marker) + 1)
+            if len(numbers) != len(marker):
+                raise ValueError('Each location marker needs a matching display number')
             for index, (label, colour, (pixel_x, pixel_y)) in enumerate(marker):
-                ax.scatter(pixel_x, pixel_y, c=colour, s=95,
-                           edgecolors="white", linewidths=1.8, zorder=4)
-                column, row = index % 3, index // 3
-                x, y = 0.07 + column * 0.30, 0.225 - row * 0.035
-                fig.text(x, y, "●", color=colour, fontsize=14)
-                short_label = label if len(label) <= 24 else label[:23] + '…'
-                fig.text(x + 0.025, y, short_label, fontsize=10, color=ink)
+                number = numbers[index]
+                # The tip, rather than the centre of the number, marks the
+                # exact radar coordinate. Point-sized vector artwork stays crisp.
+                pin = DrawingArea(22, 28, 0, 0)
+                outline = MarkerPath(
+                    [(11, 0), (7, 6), (5, 6), (0, 6), (0, 11),
+                     (0, 23), (0, 28), (5, 28), (17, 28),
+                     (22, 28), (22, 23), (22, 11), (22, 6), (17, 6),
+                     (15, 6), (11, 0), (11, 0)],
+                    [MarkerPath.MOVETO, MarkerPath.LINETO, MarkerPath.LINETO,
+                     MarkerPath.CURVE3, MarkerPath.CURVE3, MarkerPath.LINETO,
+                     MarkerPath.CURVE3, MarkerPath.CURVE3, MarkerPath.LINETO,
+                     MarkerPath.CURVE3, MarkerPath.CURVE3, MarkerPath.LINETO,
+                     MarkerPath.CURVE3, MarkerPath.CURVE3, MarkerPath.LINETO,
+                     MarkerPath.LINETO, MarkerPath.CLOSEPOLY])
+                pin.add_artist(PathPatch(outline, facecolor='#155c65', edgecolor='white',
+                                         linewidth=1.1, antialiased=True, joinstyle='round'))
+                pin.add_artist(Text(11, 17, str(number), color='white', ha='center',
+                                    va='center', fontsize=10, weight='medium'))
+                ax.add_artist(AnnotationBbox(pin, (pixel_x, pixel_y), xycoords='data',
+                    box_alignment=(0.5, 0), frameon=False, pad=0,
+                    annotation_clip=False, zorder=5))
+                column, row = index % 2, index // 2
+                x, y = 0.06 + column * 0.46, 0.315 - row * 0.062
+                fig.add_artist(FancyBboxPatch((x, y - 0.0225), 0.42, 0.045,
+                    boxstyle='round,pad=0.005,rounding_size=0.009',
+                    transform=fig.transFigure, facecolor='white', edgecolor='#e1e8f0', linewidth=0.8))
+                tile_w, tile_h = 18 / (72 * fig.get_figwidth()), 18 / (72 * fig.get_figheight())
+                fig.add_artist(FancyBboxPatch((x + 0.025 - tile_w / 2, y - tile_h / 2),
+                    tile_w, tile_h, boxstyle='round,pad=0,rounding_size=0.007',
+                    transform=fig.transFigure, facecolor='#e6f2ef', edgecolor='none'))
+                fig.text(x + 0.025, y, str(number), ha='center', va='center', fontsize=9.5,
+                         weight='medium', color='#155c65')
+                short_label = label if len(label) <= 27 else label[:26] + '…'
+                fig.text(x + 0.06, y, short_label, va='center', fontsize=11, color=ink)
+            fig.text(0.06, 0.141, 'Numbers identify places. Map shading shows rain.', fontsize=10, color=muted)
         elif marker is not None:
             pixel_x, pixel_y = marker
             ax.scatter(pixel_x, pixel_y, c="#f0529c", s=230, alpha=0.2,
@@ -538,17 +581,17 @@ def _render_heatmap(grid, title, colorbar_label, marker=None):
         ax.set_xlim(0, grid.shape[1] - 1)
         ax.set_ylim(0, grid.shape[0] - 1)
         ax.set_axis_off()
-        scale_ax = fig.add_axes([0.07, 0.09, 0.86, 0.018])
+        scale_ax = fig.add_axes([0.06, 0.065 if multiple else 0.08, 0.88, 0.014])
         # Use an opaque legend even though rain is blended over the map.
         from matplotlib.cm import ScalarMappable
         cbar = fig.colorbar(ScalarMappable(norm=im.norm, cmap=im.cmap),
                             cax=scale_ax, orientation="horizontal")
-        cbar.set_ticks([0.0, 0.25, 0.5, 0.75, 1.0])
+        cbar.set_ticks([0.0, 1.0], labels=['Lower', 'Higher'])
         cbar.outline.set_visible(False)
         cbar.ax.tick_params(labelsize=9, colors=muted, length=0, pad=6)
-        fig.text(0.07, 0.125, 'RAIN INTENSITY · shaded map colours' if isinstance(marker, list) else colorbar_label,
-                 fontsize=10, color=ink, weight='bold' if isinstance(marker, list) else 'normal')
-        fig.text(0.93, 0.125, "LOW → HIGH", fontsize=9, color=muted, ha="right")
+        fig.text(0.06, 0.104 if multiple else 0.12, 'RELATIVE RADAR INTENSITY',
+                 fontsize=9, color=ink, weight='bold')
+        fig.text(0.94, 0.104 if multiple else 0.12, 'Radar colour scale', fontsize=9, color=muted, ha='right')
         plot_buffer = BytesIO()
         fig.savefig(plot_buffer, format="png", facecolor=background)
         plot_buffer.seek(0)
@@ -568,14 +611,14 @@ def build_radar_snapshot_plot(png_path, location=None):
         value, marker, radius = local_rain(radar_plot, latitude, longitude)
 
     tick = png_path.stem
+    observed = datetime.strptime(tick, '%Y%m%d%H%M')
     plot_buffer = render_heatmap(
         radar_plot,
-        title=f"Raw Radar - {tick}",
+        title=f"Actual radar | {observed:%d %b %H:%M} SGT",
         colorbar_label="Radar intensity",
         marker=marker,
     )
 
-    observed = datetime.strptime(tick, '%Y%m%d%H%M')
     caption = rain_notice('RADAR SNAPSHOT', observed)
     if marker is not None:
         title = 'RAIN DETECTED' if value > 0.01 else 'NO RAIN DETECTED'
@@ -840,26 +883,28 @@ async def _send_auto_update(context, latest_prediction):
 
 
 def build_group_map(rows, grid, timestamp, actual=False):
-    markers, lines = [], []
+    markers, lines, marker_numbers = [], [], []
     colours = ("#e83288", "#0072b2", "#009e73", "#e69f00", "#7b3294", "#333333")
     for index, row in enumerate(rows):
         latitude, longitude = float(row['latitude']), float(row['longitude'])
         label = ' '.join(row['label'].split())
         if not in_coverage(latitude, longitude):
-            lines.append(f'{label}: outside coverage')
+            lines.append(f'{index + 1}. {label}: outside coverage')
             continue
         value, point, _ = local_rain(grid, latitude, longitude)
         markers.append((label, colours[index % len(colours)], point))
+        marker_numbers.append(index + 1)
         raining = value > 0.01 if actual else value >= 0.003
         status = ('Rain detected' if raining else 'No rain detected') if actual else ('Rain expected' if raining else 'No rain expected')
         if raining:
             intensity = source_category(value) if actual else intensity_label(value)
             status += f' — {intensity.lower()} (radar scale)'
-        lines.append(f'{label}: {status}')
+        lines.append(f'{index + 1}. {label}: {status}')
     heading = 'Actual radar' if actual else 'Forecast (+5 min)'
-    caption = f'{heading} | {timestamp:%d %b, %H:%M} SGT\n' + '\n'.join(lines)
+    caption = f'{heading} | {timestamp:%d %b, %H:%M} SGT\n\n' + '\n'.join(lines)
     image = render_heatmap(grid, f'{heading} | {timestamp:%d %b %H:%M} SGT',
-                           'Radar intensity' if actual else 'Prediction intensity', marker=markers)
+                           'Radar intensity' if actual else 'Prediction intensity',
+                           marker=markers, marker_numbers=marker_numbers)
     return image, caption
 
 

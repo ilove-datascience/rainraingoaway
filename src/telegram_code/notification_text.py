@@ -109,6 +109,22 @@ def _notice_time(value):
     return f'{value:%d %b, %H:%M} SGT'
 
 
+def notice_display_index(item, fallback):
+    """Match a partial alert batch to its original all-location map."""
+    try:
+        payload = json.loads(item.get('message') or '')
+        feedback = payload.get('feedback') or {}
+        location_id = feedback.get('location_id', item.get('location_id'))
+        scope = payload.get('photo_locations')
+        if type(location_id) is int and isinstance(scope, list) and 1 <= len(scope) <= 6:
+            for number, pair in enumerate(scope, 1):
+                if isinstance(pair, list) and len(pair) == 2 and pair[0] == location_id:
+                    return number
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return fallback
+
+
 def compose_notice(items, outlook=None):
     """Describe a batch without implying every saved location has the same weather.
 
@@ -126,7 +142,7 @@ def compose_notice(items, outlook=None):
     common_forecast = forecasts[0] if forecasts and len(set(forecasts)) == 1 else None
     lines = ['Rain update', '']
     uses_intensity = False
-    for item, (label, reason, intensity), observed in zip(items, details, observed_times):
+    for number, (item, (label, reason, intensity), observed) in enumerate(zip(items, details, observed_times), 1):
         if reason == OBSERVED:
             status = f'{intensity} rain detected' if intensity else 'Rain detected'
         elif reason == START:
@@ -142,7 +158,7 @@ def compose_notice(items, outlook=None):
         else:
             status = 'Weather conditions changed'
         uses_intensity = uses_intensity or (intensity is not None and reason in (START, OBSERVED))
-        lines.append(f'• {label}: {status}.')
+        lines.append(f'{notice_display_index(item, number)}. {label}: {status}.')
         times = []
         if observed and common_observed is None:
             times.append(f'Radar: {observed}')
