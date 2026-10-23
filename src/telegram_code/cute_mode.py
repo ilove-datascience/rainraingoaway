@@ -15,7 +15,7 @@ def cute_enabled(chat_id):
     if not PREFERENCES_PATH.exists():
         return False
     try:
-        with sqlite3.connect(PREFERENCES_PATH) as conn:
+        with sqlite3.connect(PREFERENCES_PATH, timeout=1) as conn:
             row = conn.execute('SELECT enabled FROM cute_mode WHERE chat_id=?', (str(chat_id),)).fetchone()
         return bool(row and row[0])
     except sqlite3.Error:

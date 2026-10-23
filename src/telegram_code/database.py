@@ -34,7 +34,8 @@ def _get_db_connection():
 		host=config.get("host"),
 		user=config.get("user"),
 		password=config.get("password"),
-		database=config.get("database")
+		database=config.get("database"),
+		connection_timeout=5, read_timeout=5, write_timeout=5
 	)
  
 from mysql.connector import Error

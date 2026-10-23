@@ -11,6 +11,7 @@ from telegram_code.weather_schedule import (
     weather_alerts_command, weather_alerts_callback, schedule_weather,
 )
 from telegram_code.feedback import handle_feedback
+from telegram_code.request_budget import bounded_weather_reply
 
 try:
     from .methods import check_model_queue, check_radar_notifications, handle_actual, handle_location, handle_msg, load_token, start
@@ -80,12 +81,12 @@ def run_bot(model, folder_path, model_ready_queue, norm_stats=None) -> None:
     app.add_handler(
         CommandHandler(
             "actual",
-            partial(handle_actual, folder_path=folder_path),
+            bounded_weather_reply(partial(handle_actual, folder_path=folder_path)),
         )
     )
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
-        partial(handle_msg, model=model, folder_path=folder_path, norm_stats=norm_stats),
+        bounded_weather_reply(partial(handle_msg, model=model, folder_path=folder_path, norm_stats=norm_stats)),
     ))
     app.add_handler(
         MessageHandler(
