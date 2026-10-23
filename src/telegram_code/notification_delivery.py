@@ -193,7 +193,7 @@ async def _deliver_notifications(context, reply_markup=None):
                     outcome = ('pending', send_at, None, 0)
                 elif use_photo:
                     with BytesIO(photo_bytes) as photo:
-                        photo.name = 'radar.png'
+                        photo.name = 'radar.jpg' if photo.getvalue().startswith(b'\xff\xd8') else 'radar.png'
                         sent = await context.bot.send_photo(chat_id=item['userid'], photo=photo,
                                                             caption=message, reply_markup=markup)
                     outcome = ('sent', sg_now(), sent.message_id, 0)

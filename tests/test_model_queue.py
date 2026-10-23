@@ -36,6 +36,15 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
     async def poll(self):
         await self.check(self.context,None,self.folder,None,self.arrivals)
 
+    async def test_publishes_before_alert_delivery(self):
+        self.frames()
+        self.arrivals.put(202609170050)
+        async def notify(context, result):
+            self.assertIs(context.application.bot_data['latest_prediction'], result)
+        self.notify.side_effect = notify
+        await self.poll()
+        self.notify.assert_awaited_once()
+
     async def test_recent_failure_retried_then_succeeds(self):
         self.frames()
         self.run.side_effect = [None,self.prediction]

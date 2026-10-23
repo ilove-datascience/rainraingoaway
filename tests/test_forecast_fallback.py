@@ -47,6 +47,8 @@ class ForecastFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.update.message.reply_photo.await_args.kwargs['reply_markup'], 'radar-buttons')
         self.assertIn(FEEDBACK_PROMPT, caption)
 
+        self.env['run_model'].assert_not_awaited()
+
     async def test_shared_location_uses_requested_coordinates(self):
         await self.env['handle_location'](self.update,self.context,None,'.')
         self.env['build_radar_snapshot_plot'].assert_called_once_with(Path('202609111050.png'),(1.32,103.85))
@@ -97,6 +99,7 @@ class ForecastFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.env['list_locations'] = Mock(return_value=rows)
         self.update.effective_chat.id = -1001
         await self.env['handle_msg'](self.update, self.context, None, '.')
+        self.env['run_model'].assert_not_awaited()
         self.radar_feedback.assert_awaited_once_with(-1001, rows, Path('202609111050.png'))
         self.env['build_group_actual'].assert_called_once_with(rows, Path('202609111050.png'))
         self.assertEqual(self.update.message.reply_photo.await_args.kwargs['reply_markup'], 'radar-buttons')
@@ -104,7 +107,7 @@ class ForecastFallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_forecast_expiring_during_feedback_preparation_falls_back_to_radar(self):
         self.context.application.bot_data['latest_prediction'] = {'fresh': True}
-        self.env['is_fresh'] = Mock(side_effect=[True, True, False])
+        self.env['is_fresh'] = Mock(side_effect=[True, False])
         await self.env['handle_msg'](self.update, self.context, None, '.')
         self.forecast_feedback.assert_awaited_once()
         self.radar_feedback.assert_awaited_once()

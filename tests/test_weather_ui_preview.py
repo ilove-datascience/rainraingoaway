@@ -43,7 +43,10 @@ def test_card_preserves_grid_coordinates_and_source_type(title, badge):
                 tip = pin.offsetbox.get_transform().transform((11, 0))
                 assert np.allclose(tip, axes.transData.transform(pin.xy))
             assert badge in [item.get_text() for item in figure.texts]
-            assert image.read(8) == b'\x89PNG\r\n\x1a\n'
+            from PIL import Image
+            with Image.open(image) as decoded:
+                assert decoded.format == 'JPEG'
+                assert decoded.size == (1600, 1800)
     finally:
         if image is not None:
             image.close()

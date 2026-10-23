@@ -190,6 +190,7 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         from telegram_code.feedback_context import reply_weather_photo
         image = BytesIO(b'group-map')
         prediction = {'prediction': 'grid', 'next_tick': datetime(2026,9,17,12)}
+        self.context.application.bot_data['latest_prediction'] = prediction
         env = functions('src/telegram_code/methods.py', dict(asyncio=asyncio,
             ReplyKeyboardRemove=lambda: 'removed', list_locations=lambda chat: self.rows,
             forecast_feedback=AsyncMock(return_value=None), reply_weather_photo=reply_weather_photo,

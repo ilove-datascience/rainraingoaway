@@ -3,6 +3,8 @@ import os
 import queue
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
@@ -313,9 +315,6 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
         return
     prediction = context.application.bot_data.get("latest_prediction")
     if not is_fresh(prediction):
-        await update.message.reply_text("Checking for a current forecast…", reply_markup=ReplyKeyboardRemove())
-        prediction = await run_model(model, folder_path, norm_stats)
-    if not is_fresh(prediction):
         await send_actual_fallback(update, folder_path, location)
         return
     context.application.bot_data["latest_prediction"] = prediction
@@ -328,7 +327,17 @@ async def handle_msg(update, context, model, folder_path, norm_stats=None):
     await reply_weather_photo(update, image, caption, markup)
 
 
+# Keep inference off Telegram's loop and short I/O workers; serialize model access.
+_model_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="radar-model")
+
+
 async def run_model(model, folder_path, norm_stats=None, tick=None):
+    return await asyncio.get_running_loop().run_in_executor(
+        _model_executor, partial(_run_model_sync, model, folder_path, norm_stats, tick)
+    )
+
+
+def _run_model_sync(model, folder_path, norm_stats=None, tick=None):
     """
     Run the rainfall model using the latest available radar/environment data.
 
@@ -338,7 +347,7 @@ async def run_model(model, folder_path, norm_stats=None, tick=None):
 
     try:
         if tick is None:
-            latest = await asyncio.to_thread(get_latest_radar_png, folder_path)
+            latest = get_latest_radar_png(folder_path)
             if latest is None:
                 return None
             tick = int(latest.stem)
@@ -352,8 +361,7 @@ async def run_model(model, folder_path, norm_stats=None, tick=None):
         next_tick = most_recent_tick + timedelta(minutes=5)
 
         # Build model input
-        x = await asyncio.to_thread(
-            build_multimodal_input,
+        x = build_multimodal_input(
             prev_ticks,
             folder_path=folder_path,
             norm_stats=norm_stats
@@ -406,7 +414,9 @@ async def run_model(model, folder_path, norm_stats=None, tick=None):
             "prediction": pred_plot,
             "next_tick": next_tick,
             "observed_at": most_recent_tick,
-            "actual_radar": np.flipud(x[0, -1, CH_RADAR].detach().cpu().numpy()),
+            # Observations must use exact source levels, not resized model inputs.
+            "actual_radar": np.flipud(remove_small_echoes(decode_png(
+                Path(folder_path) / f"{prev_ticks[0]}.png", SOURCE))),
 
             # Keep these if you want diagnostics later
             "raw_prediction": raw_np,
@@ -447,13 +457,6 @@ async def handle_location(
     )
 
     if not is_fresh(latest_prediction):
-        latest_prediction = await run_model(
-            model,
-            folder_path,
-            norm_stats
-        )
-
-    if not is_fresh(latest_prediction):
         await send_actual_fallback(update, folder_path, (latitude, longitude), label='Shared location')
         return
 
@@ -475,8 +478,7 @@ async def handle_location(
 
 def get_latest_radar_png(folder_path) -> Path | None:
     """Return the most recently captured raw radar PNG, or None if there are none."""
-    pngs = sorted(Path(folder_path).glob("*.png"))
-    return pngs[-1] if pngs else None
+    return max(Path(folder_path).glob("*.png"), default=None)
 
 
 _plot_lock = threading.Lock()
@@ -498,9 +500,9 @@ def _render_heatmap(grid, title, colorbar_label, marker=None, marker_numbers=Non
     from matplotlib.text import Text
     background, ink, muted = "#f4f7fb", "#17304c", "#60748b"
     multiple = isinstance(marker, list)
-    # Render the text and marker edges at double density for high-DPI phones.
+    # A 1600px-wide card keeps phone text sharp while limiting upload size.
     # Radar cells retain their original values and nearest-neighbour display.
-    fig = plt.figure(figsize=(8, 9) if multiple else (8, 7), dpi=320, facecolor=background)
+    fig = plt.figure(figsize=(8, 9) if multiple else (8, 7), dpi=200, facecolor=background)
     try:
         heading, separator, timestamp = title.partition(" | ")
         fig.text(0.06, 0.96, "RAINRAINGOAWAY", fontsize=10,
@@ -593,7 +595,9 @@ def _render_heatmap(grid, title, colorbar_label, marker=None, marker_numbers=Non
                  fontsize=9, color=ink, weight='bold')
         fig.text(0.94, 0.104 if multiple else 0.12, 'Radar colour scale', fontsize=9, color=muted, ha='right')
         plot_buffer = BytesIO()
-        fig.savefig(plot_buffer, format="png", facecolor=background)
+        fig.savefig(plot_buffer, format="jpeg", facecolor=background,
+                    pil_kwargs={"quality": 92, "subsampling": 0, "optimize": True})
+        plot_buffer.name = "radar.jpg"
         plot_buffer.seek(0)
         return plot_buffer
     finally:
@@ -794,11 +798,11 @@ async def check_model_queue(context, model, folder_path, norm_stats, model_ready
         if result is None:
             print(f"Model run failed for {tick}; retained for retry")
             continue
-        await send_auto_update(context, result)
         pending.discard(tick)
         current = context.application.bot_data.get("latest_prediction")
         if current is None or result["observed_at"] > current["observed_at"]:
             context.application.bot_data["latest_prediction"] = result
+        await send_auto_update(context, result)
     # Retry durable notifications even when there are no newly arrived radar frames.
     await deliver_notifications(context)
 
@@ -939,8 +943,6 @@ async def handle_group_forecasts(update, context, model, folder_path, norm_stats
         await update.message.reply_text('This chat has more than 6 locations. Use /removelocation to reduce it to 6 before requesting a map.', reply_markup=ReplyKeyboardRemove())
         return
     prediction = context.application.bot_data.get('latest_prediction')
-    if not is_fresh(prediction):
-        prediction = await run_model(model, folder_path, norm_stats)
     if not is_fresh(prediction):
         await send_group_actual(update, folder_path, rows)
         return

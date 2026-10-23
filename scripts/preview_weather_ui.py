@@ -93,6 +93,8 @@ def main():
                 with matplotlib.rc_context({'svg.fonttype': 'path'}):
                     original_savefig(figure, args.output / 'draft-radar.svg', format='svg',
                                      facecolor=figure.get_facecolor())
+            kwargs.pop("pil_kwargs", None)
+            kwargs.update(format="png", dpi=320)
             return original_savefig(figure, *positional, **kwargs)
         with patch.object(Figure, 'savefig', save_preview):
             image, caption = functions['build_group_map'](rows, grid, observed, actual=True)

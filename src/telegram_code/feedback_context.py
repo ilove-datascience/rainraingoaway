@@ -1,4 +1,5 @@
 """Freeze the location and weather shown to a user before collecting a report."""
+import time
 import asyncio
 from datetime import datetime
 import json
@@ -103,6 +104,7 @@ def with_feedback_prompt(caption, markup):
 
 async def reply_weather_photo(update, photo, caption, markup=None):
     """Keep long location labels intact and put buttons beneath their full text."""
+    started = time.perf_counter()
     caption = with_feedback_prompt(caption, markup)
     keyboard = markup if markup is not None else ReplyKeyboardRemove()
     try:
@@ -111,4 +113,5 @@ async def reply_weather_photo(update, photo, caption, markup=None):
         await update.message.reply_photo(photo=photo)
         return await update.message.reply_text(caption, reply_markup=keyboard)
     finally:
+        logger.info("Weather photo transport elapsed_s=%.3f", time.perf_counter() - started)
         photo.close()
