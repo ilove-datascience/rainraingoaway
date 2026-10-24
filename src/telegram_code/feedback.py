@@ -17,7 +17,7 @@ DB_PATH = Path(__file__).resolve().parents[2] / 'data' / 'forecast_feedback.sqli
 SGT = timezone(timedelta(hours=8))
 UTC = timezone.utc
 REPORT_WINDOW = timedelta(minutes=30)
-FEEDBACK_PROMPT = ('Were you there? Choose a location number and report rain at the shown SGT time.\n'
+FEEDBACK_PROMPT = ('Were you there? Tap the named location below to report rain at the shown SGT time.\n'
                    'Reports close 30 minutes after that time.')
 CALLBACK_PATTERN = r'^rainfb:[A-Za-z0-9_-]{16}:(?:dry|wet)$'
 
@@ -156,12 +156,11 @@ async def prepare_feedback(chat_id, snapshots):
         rows = []
         for index, (token, snapshot) in enumerate(prepared, 1):
             target = datetime.fromisoformat(snapshot['target_at']).astimezone(SGT)
-            number = snapshot.get('display_index') or index
-            # Numbers match the full location labels; each button keeps its target time.
-            place_time = f'{number}. {target:%H:%M}'
-            rows.append([
-                InlineKeyboardButton(f'{place_time} · No rain', callback_data=f'rainfb:{token}:dry'),
-                InlineKeyboardButton(f'{place_time} · Raining', callback_data=f'rainfb:{token}:wet'),
+            # Full-width choices keep names readable without a numbered lookup.
+            place_time = f'{snapshot["label"]} · {target:%H:%M}'
+            rows.extend([
+                [InlineKeyboardButton(f'{place_time} · No rain', callback_data=f'rainfb:{token}:dry')],
+                [InlineKeyboardButton(f'{place_time} · Raining', callback_data=f'rainfb:{token}:wet')],
             ])
         return InlineKeyboardMarkup(rows)
     except Exception as exc:
