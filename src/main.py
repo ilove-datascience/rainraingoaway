@@ -13,6 +13,7 @@ from data_processing.multimodal_radar_dataset import radar_dataset_multimodal
 from models.multi_modal_convlstm import ConvLSTM_MM
 from data_processing.model_contract import validate_contract
 from scraping.gov_api import main as run_weather_scraper_forever
+from scraping.rainfall import main as run_rainfall_scraper_forever
 from scraping.frame_cache import run_frame_cache_worker
 from scraping.rain_areas import (
     SG_OFFSET_HOURS,
@@ -139,6 +140,13 @@ def main() -> None:
     weather_thread.start()
 
     print("Started weather scraper thread")
+
+    threading.Thread(
+        target=run_rainfall_scraper_forever,
+        daemon=True,
+        name="rainfall-archive",
+    ).start()
+    print("Started daily rainfall archive collector")
 
     norm_stats = ensure_normalization_stats()
     model = load_model()

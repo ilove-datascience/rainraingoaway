@@ -56,7 +56,7 @@ class ScraperTests(unittest.TestCase):
         env = dict(datetime_now_str=lambda **kw: 202609101200, SG_OFFSET_HOURS=8,
                    queue=queue, threading=types.SimpleNamespace(Thread=thread),
                    run_frame_cache_worker=Mock(), run_scraper_forever=scrape,
-                   run_weather_scraper_forever=Mock(), ensure_normalization_stats=Mock(),
+                   run_weather_scraper_forever=Mock(), run_rainfall_scraper_forever=Mock(), ensure_normalization_stats=Mock(),
                    load_model=Mock(), check_history=Mock(return_value=True), run_bot=Mock(), DATA_PATH='70km')
         exec(compile(ast.Module(body=[node], type_ignores=[]), 'startup', 'exec'), env)
         env['main']()
