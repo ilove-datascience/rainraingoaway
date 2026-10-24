@@ -154,14 +154,22 @@ async def prepare_feedback(chat_id, snapshots):
         normalized = [_snapshot(item, now) for item in snapshots]
         prepared = await asyncio.to_thread(_store_snapshots, chat_id, normalized, now)
         rows = []
-        for index, (token, snapshot) in enumerate(prepared, 1):
+        mixed_times = len({item['target_at'] for _, item in prepared}) > 1
+        for token, snapshot in prepared:
             target = datetime.fromisoformat(snapshot['target_at']).astimezone(SGT)
-            # Full-width choices keep names readable without a numbered lookup.
-            place_time = f'{snapshot["label"]} · {target:%H:%M}'
-            rows.extend([
-                [InlineKeyboardButton(f'{place_time} · No rain', callback_data=f'rainfb:{token}:dry')],
-                [InlineKeyboardButton(f'{place_time} · Raining', callback_data=f'rainfb:{token}:wet')],
-            ])
+            # The message already shows the shared time; retain per-place times
+            # only when a batched alert refers to different forecast windows.
+            place = snapshot['label']
+            if mixed_times:
+                place += f' · {target:%H:%M}'
+            buttons = [
+                InlineKeyboardButton(f'{place} · No rain', callback_data=f'rainfb:{token}:dry'),
+                InlineKeyboardButton(f'{place} · Raining', callback_data=f'rainfb:{token}:wet'),
+            ]
+            if len(place) <= 12:
+                rows.append(buttons)
+            else:
+                rows.extend([[button] for button in buttons])
         return InlineKeyboardMarkup(rows)
     except Exception as exc:
         # Avoid logging tokens, coordinates, labels or reporter identities.
