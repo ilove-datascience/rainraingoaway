@@ -25,9 +25,9 @@ class AutoNoticeBatchTests(unittest.IsolatedAsyncioTestCase):
         self.now = self.observed + timedelta(seconds=30)
         self.rows = [
             dict(userid=-1001, location_id=0, rain_settings_version=2,
-                 label='Main', latitude=1.31, longitude=103.8, mode='automatic'),
+                 label='Main', latitude=1.31, longitude=103.8, mode='automatic', alerts_enabled=True),
             dict(userid=-1001, location_id=4, rain_settings_version=3,
-                 label='Kaixin', latitude=1.33, longitude=103.9, mode='automatic'),
+                 label='Kaixin', latitude=1.33, longitude=103.9, mode='automatic', alerts_enabled=True),
         ]
         self.actual = {1.31: .22, 1.33: .37}
         self.forecast = {1.31: .2, 1.33: .4}
@@ -67,6 +67,19 @@ class AutoNoticeBatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def produce(self):
         return await self.env['send_auto_update'](self.context, self.prediction)
+
+    async def test_only_selected_locations_produce_automatic_notices(self):
+        self.rows[0]['alerts_enabled'] = False
+        self.assertTrue(await self.produce())
+        messages = [call for call in self.save.call_args_list if call.args[2]]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].args[0]['location_id'], 4)
+
+    async def test_all_locations_off_produces_no_notices(self):
+        for row in self.rows:
+            row['alerts_enabled'] = False
+        self.assertTrue(await self.produce())
+        self.assertFalse(any(call.args[2] for call in self.save.call_args_list))
 
     def messages(self):
         return [json.loads(call.args[2]) for call in self.save.call_args_list if call.args[2]]

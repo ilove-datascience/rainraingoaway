@@ -4,7 +4,7 @@ from functools import partial
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 from telegram.request import HTTPXRequest
 from telegram_code.cute_mode import CuteBot, cutemode
-from telegram_code.group_locations import locations_command, remove_location_command
+from telegram_code.group_locations import remove_location_command
 from telegram_code.heartbeat import schedule_heartbeat
 from telegram_code.daily_forecast import weather_command
 from telegram_code.weather_schedule import (
@@ -54,9 +54,7 @@ def run_bot(model, folder_path, model_ready_queue, norm_stats=None) -> None:
     app.add_handler(CallbackQueryHandler(weather_alerts_callback, pattern=r'^weatheralerts:'))
     app.add_handler(MessageHandler(filters.Regex("^Weather updates$"), weather_alerts_command))
     app.add_handler(CallbackQueryHandler(handle_feedback, pattern=r'^rainfb:'))
-    app.add_handler(get_conversation_handler())
-    app.add_handler(CommandHandler("locations", locations_command))
-    app.add_handler(MessageHandler(filters.Regex("^Saved locations$"), locations_command))
+    app.add_handler(get_conversation_handler(model, folder_path, norm_stats))
     app.add_handler(CommandHandler("removelocation", remove_location_command))
 
     schedule_heartbeat(app.job_queue)

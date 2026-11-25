@@ -16,7 +16,7 @@ class ChatSettingsTests(unittest.IsolatedAsyncioTestCase):
         self.locations = {42: (1.3, 103.8)}
         self.modes = {42: 'automatic'}
         def add_user(chat):
-            self.modes.setdefault(chat, 'manual')
+            self.modes.setdefault(chat, 'automatic')
         def add_location(chat, lat, long):
             self.locations[chat] = (lat, long)
             return True
@@ -31,7 +31,8 @@ class ChatSettingsTests(unittest.IsolatedAsyncioTestCase):
                         add_location=add_location, save_mode_choice=save_mode,
                         get_user_mode=self.modes.get, in_coverage=lambda *a: True,
                         list_locations=lambda chat: [], main_menu=lambda *args: None, ReplyKeyboardMarkup=lambda **k: None,
-                        settings_lock=lambda c: asyncio.Lock())
+                        settings_lock=lambda c: asyncio.Lock(), open_location=AsyncMock(return_value=-1),
+                        open_menu_page=AsyncMock(return_value=-1), turn_off_all=lambda chat: True)
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), self.env)
         self.context = SimpleNamespace(application=SimpleNamespace(bot_data={}))
 
@@ -45,7 +46,7 @@ class ChatSettingsTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_groups_start_fresh_and_private_settings_survive(self):
         for chat in (-1001234567890, -1009876543210):
             self.assertEqual(await self.env['start'](self.update(chat), self.context), 1)
-            self.assertEqual(self.modes[chat], 'manual')
+            self.assertEqual(self.modes[chat], 'automatic')
             self.assertNotIn(chat, self.locations)
         self.assertEqual(await self.env['start'](self.update(42), self.context), -1)
         self.assertEqual(self.modes[42], 'automatic')

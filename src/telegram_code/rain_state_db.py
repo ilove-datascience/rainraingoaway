@@ -4,6 +4,7 @@ from telegram_code.database import _get_db_connection
 
 def ensure_rain_state_schema():
     columns = {
+        'alerts_enabled': 'BOOLEAN NOT NULL DEFAULT 1',
         'location_id': 'BIGINT NOT NULL DEFAULT 0',
         'label': "VARCHAR(80) NOT NULL DEFAULT 'Main'",
         'state': "ENUM('predicted','confirmed','predicted norain') NOT NULL DEFAULT 'predicted norain'",
@@ -95,7 +96,7 @@ def save_rain_state(row, result, message=None, now=None, photo=None):
                  result['radar_raining'], result['rain_forecast_value'], result.get('rain_dry_since'),
                  result.get('rain_episode_wet', result['radar_raining']), row['userid'], row.get('location_id', 0), row['latitude'], row['longitude'], row['rain_settings_version'], result['rain_observed_at'], result['rain_observed_at'], result['rain_forecast_value']))
             changed = cur.rowcount > 0
-            if changed and message and user[0] == 'automatic':
+            if changed and message and user[0] == 'automatic' and row['alerts_enabled']:
                 cur.execute('''INSERT INTO rain_notifications
                     (userid,location_id,settings_version,observed_at,forecast_at,reason,message,available_at,photo)
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',

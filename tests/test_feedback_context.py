@@ -181,7 +181,7 @@ class WeatherPhotoReplyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TimeoutError):
             await context.reply_weather_photo(self.update, photo, 'Radar snapshot')
         self.assertEqual(self.update.message.reply_photo.await_args.kwargs['caption'], 'Radar snapshot')
-        self.assertTrue(self.update.message.reply_photo.await_args.kwargs['reply_markup'].remove_keyboard)
+        self.assertIsNone(self.update.message.reply_photo.await_args.kwargs['reply_markup'])
         self.assertTrue(photo.closed)
 
 

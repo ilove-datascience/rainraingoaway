@@ -292,14 +292,14 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ClaimTests(unittest.TestCase):
-    def claim(self, mode='automatic', version=1, actual=False, expired=False):
+    def claim(self, mode='automatic', version=1, actual=False, expired=False, enabled=True):
         from datetime import datetime, timedelta
         now = datetime(2026,9,10,12)
         item = dict(id=1,userid=123,settings_version=1,reason=delivery.ENDED if actual else 'Rain is predicted at your location',
                     observed_at=now-timedelta(minutes=10 if expired else 0),
                     forecast_at=now + timedelta(minutes=-1 if expired else 5),message='legacy')
         cursor = Mock()
-        cursor.fetchone.side_effect = [{'userid':123}, None, {'mode':mode,'rain_settings_version':version,'label':'Main'}, None]
+        cursor.fetchone.side_effect = [{'userid':123}, None, {'mode':mode,'rain_settings_version':version,'label':'Main','alerts_enabled':enabled}, None]
         cursor.fetchall.side_effect = [[item], [{'location_id':0,'rain_settings_version':version}]]
         connection = Mock()
         connection.cursor.return_value = cursor
@@ -310,6 +310,9 @@ class ClaimTests(unittest.TestCase):
 
     def test_manual_mode_cancels(self):
         self.assertEqual(self.claim(mode='manual'), {'cancelled':True})
+
+    def test_disabled_location_cancels(self):
+        self.assertEqual(self.claim(enabled=False), {'cancelled':True})
 
     def test_changed_location_or_settings_cancels(self):
         self.assertEqual(self.claim(version=2), {'cancelled':True})

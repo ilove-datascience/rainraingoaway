@@ -52,7 +52,7 @@ def add_user(userid) -> bool:
         cursor.execute(
             """
             INSERT INTO users (userid, mode)
-            VALUES (%s, 'manual')
+            VALUES (%s, 'automatic')
             ON DUPLICATE KEY UPDATE userid=VALUES(userid)
             """,
             (userid,)
@@ -84,18 +84,28 @@ def add_location(userid, lat, long)-> bool:
     try:
         connection = _get_db_connection()
         cursor = connection.cursor()
-        cursor.execute('SELECT userid FROM users WHERE userid=%s FOR UPDATE', (userid,))
-        if cursor.fetchone() is None:
+        cursor.execute('SELECT mode FROM users WHERE userid=%s FOR UPDATE', (userid,))
+        user = cursor.fetchone()
+        if user is None:
             return False
+        cursor.execute('SELECT location_id FROM user_location WHERE userid=%s AND location_id=0', (userid,))
+        creating = cursor.fetchone() is None
+        if creating and user[0] != 'automatic':
+            cursor.execute('''UPDATE user_location SET alerts_enabled=0,
+                rain_settings_version=rain_settings_version+1,
+                rain_episode_reason=NULL,rain_alert_reason=NULL,rain_dry_since=NULL,rain_episode_wet=0 WHERE userid=%s''', (userid,))
+            cursor.execute("UPDATE rain_notifications SET status='cancelled' WHERE userid=%s AND status='pending'", (userid,))
+            cursor.execute("UPDATE users SET mode='automatic' WHERE userid=%s", (userid,))
 
         cursor.execute(
             """
                 INSERT INTO user_location (
                     userid,
                     latitude,
-                    longitude
+                    longitude,
+                    alerts_enabled
                 )
-                VALUES (%s, %s, %s)
+                VALUES (%s, %s, %s, 1)
 
                 ON DUPLICATE KEY UPDATE
                     latitude = VALUES(latitude),

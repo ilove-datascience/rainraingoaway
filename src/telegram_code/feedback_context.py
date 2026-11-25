@@ -7,7 +7,6 @@ import logging
 
 import numpy as np
 
-from telegram import ReplyKeyboardRemove
 from telegram_code.feedback import FEEDBACK_PROMPT, prepare_feedback
 from telegram_code.local_rain import in_coverage, local_rain
 from telegram_code.notification_text import notice_display_index
@@ -106,7 +105,7 @@ async def reply_weather_photo(update, photo, caption, markup=None):
     """Keep long location labels intact and put buttons beneath their full text."""
     started = time.perf_counter()
     caption = with_feedback_prompt(caption, markup)
-    keyboard = markup if markup is not None else ReplyKeyboardRemove()
+    keyboard = markup
     try:
         if len(caption.encode('utf-16-le')) // 2 <= 1024:
             return await update.message.reply_photo(photo=photo, caption=caption, reply_markup=keyboard)

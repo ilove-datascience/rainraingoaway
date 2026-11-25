@@ -37,7 +37,7 @@ def claim_notifications(now, limit=100):
             photo_scope = sorted([row['location_id'], row['rain_settings_version']] for row in cur.fetchall())
             items = []
             for item in candidates:
-                cur.execute('''SELECT u.mode,l.rain_settings_version,l.label FROM users u
+                cur.execute('''SELECT u.mode,l.rain_settings_version,l.label,l.alerts_enabled FROM users u
                     JOIN user_location l ON l.userid=u.userid WHERE u.userid=%s AND l.location_id=%s''',
                     (item['userid'], item.get('location_id', 0)))
                 user = cur.fetchone()
@@ -48,7 +48,7 @@ def claim_notifications(now, limit=100):
                 actual = item['reason'] in (ENDED, OBSERVED, CANCELLED)
                 deadline = item['observed_at'] + timedelta(minutes=10) if actual else item['forecast_at']
                 expired = not item['observed_at'] <= now < deadline
-                eligible = user and user['mode'] == 'automatic' and user['rain_settings_version'] == item['settings_version']
+                eligible = user and user['mode'] == 'automatic' and user['alerts_enabled'] and user['rain_settings_version'] == item['settings_version']
                 status = 'sending' if eligible and not expired and not superseded and item['reason'] != ENDING else 'cancelled'
                 cur.execute('UPDATE rain_notifications SET status=%s WHERE id=%s', (status, item['id']))
                 if expired and eligible and not superseded:

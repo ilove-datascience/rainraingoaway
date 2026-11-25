@@ -29,27 +29,18 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
             ReplyKeyboardRemove=lambda: "removed", asyncio=asyncio, ConversationHandler=SimpleNamespace(END=-1), MAX_CHAT_LOCATIONS=6, WAITING_FOR_EXTRA_LOCATION=3, WAITING_FOR_LOCATION_NAME=4, WAITING_FOR_REMOVAL_NAME=5,
             ForceReply=lambda: None, main_menu=lambda *args: None,
             in_coverage=lambda *args: True, settings_lock=lambda ctx: asyncio.Lock()))
-        self.env.update(list_locations=Mock(return_value=self.rows), add_named_location=Mock(return_value=True))
+        self.env.update(list_locations=Mock(return_value=self.rows), add_named_location=Mock(return_value=True), location_menu=AsyncMock(return_value=-1))
         self.context = SimpleNamespace(args=['School'], chat_data={}, application=SimpleNamespace(bot_data={}))
         self.update = SimpleNamespace(effective_chat=SimpleNamespace(id=-1001, type='supergroup'),
             message=SimpleNamespace(reply_text=AsyncMock(), reply_photo=AsyncMock(),
                                     location=SimpleNamespace(latitude=1.3, longitude=103.8)))
 
-    async def test_menu_reopens_buttons_and_clears_pending_setup(self):
-        self.context.chat_data['new_location_label'] = 'Unfinished'
-        env = functions('src/telegram_code/menus.py', dict(
-            ReplyKeyboardMarkup=lambda rows, **kwargs: rows,
-            ConversationHandler=SimpleNamespace(END=-1)))
-        self.assertEqual(await env['show_menu'](self.update, self.context), -1)
-        self.assertNotIn('new_location_label', self.context.chat_data)
-        self.assertIn(['Saved locations', 'Add location'], self.update.message.reply_text.await_args.kwargs['reply_markup'])
-
-    async def test_completion_and_cancel_remove_keyboard(self):
+    async def test_completion_and_cancel_preserve_keyboard(self):
         await self.env['add_location_command'](self.update, self.context)
         await self.env['receive_extra_location'](self.update, self.context)
-        self.assertEqual(self.update.message.reply_text.await_args.kwargs['reply_markup'], 'removed')
+        self.assertIsNone(self.update.message.reply_text.await_args.kwargs['reply_markup'])
         await self.env['cancel_location'](self.update, self.context)
-        self.assertEqual(self.update.message.reply_text.await_args.kwargs['reply_markup'], 'removed')
+        self.assertIsNone(self.update.message.reply_text.await_args.kwargs['reply_markup'])
 
     async def test_button_add_and_remove_flow(self):
         self.context.args = None
@@ -61,14 +52,6 @@ class GroupHandlersTests(unittest.IsolatedAsyncioTestCase):
         self.env['remove_named_location'] = Mock(return_value=True)
         self.assertEqual(await self.env['receive_removal_name'](self.update, self.context), -1)
         self.env['remove_named_location'].assert_called_once_with(-1001, 'School')
-
-    def test_menu_buttons_in_private_and_group_chats(self):
-        env = functions('src/telegram_code/menus.py', dict(ReplyKeyboardMarkup=lambda rows, **kwargs: rows))
-        group = sum(env['main_menu'](-1001), [])
-        private = sum(env['main_menu'](42), [])
-        for label in ('Add location', 'Saved locations', 'Remove location'):
-            self.assertIn(label, group)
-            self.assertIn(label, private)
 
     async def test_add_flow_keeps_name_and_chat(self):
         self.assertEqual(await self.env['add_location_command'](self.update, self.context), 3)
